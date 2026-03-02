@@ -436,10 +436,26 @@ function getPaymentType(tender) {
     case 'EXTERNAL': {
       const src = (tender.external_details?.source_name ?? '').toUpperCase();
       if (src.includes('AU PAY') || src.includes('AUPAY')) return 'au PAY';
-      if (src.includes('D払い') || src.includes('DBARAI') || src.includes('D-BARAI') || src.includes('D BARAI')) return 'd払い';
+      if (src.includes('D払い') || src.includes('DBARAI') || src.includes('D-BARAI')) return 'd払い';
       if (src.includes('楽天') || src.includes('RAKUTEN')) return '楽天ペイ';
-      if (src.includes('PAYPAY')) return 'その他';
       return '電子マネー';
+    }
+    case 'OTHER': {
+      const note = (tender.note ?? '').toLowerCase();
+      // オンライン注文（カラーミーと重複するため除外用）
+      if (note.includes('オンライン') || note.includes('online')) return 'オンライン';
+      // 売掛（別タブ管理用）
+      if (note.includes('売掛') || note.includes('掛け') || note.includes('かけ')) return '売掛';
+      // クレジット系（テラス・エポス等）→ カード扱い
+      if (note.includes('クレジット') || note.includes('credit')) return 'カード';
+      // 電子マネー系
+      if (note.includes('id') || note.includes('マナカ') || note.includes('manaca') ||
+          note.includes('イオン') || note.includes('kuikku') || note.includes('suica') ||
+          note.includes('pasmo')) return '電子マネー';
+      // 金シャチ系
+      if (note.includes('金シャチ') || note.includes('きんしゃち')) return 'その他';
+      // PayPay系（デフォルト）
+      return 'その他';
     }
     default:
       return 'その他';
@@ -633,3 +649,64 @@ function writeToSheet(sheet, headers, rows) {
   }
   sheet.setFrozenRows(1);
 }
+
+
+
+
+
+
+
+
+function checkTenderNames() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    'Content-Type': 'application/json',
+  };
+
+  const locRes = JSON.parse(
+    UrlFetchApp.fetch('https://connect.squareup.com/v2/locations', {
+      headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
+    }).getContentText()
+  );
+
+  const payload = {
+    location_ids: [locRes.locations[0].id],
+    query: {
+      filter: {
+        closed_at: { start_at: '2026-02-01T00:00:00+09:00' },
+        state_filter: { states: ['COMPLETED'] },
+      },
+    },
+    limit: 10,
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
+      method: 'post',
+      headers: sqHeaders,
+      payload: JSON.stringify(payload),
+    }).getContentText()
+  );
+
+  res.orders?.forEach(order => {
+    order.tenders?.forEach(tender => {
+      console.log(JSON.stringify({
+        type: tender.type,
+        card_brand: tender.card_details?.card_brand,
+        source_name: tender.external_details?.source_name,
+        amount: tender.amount_money?.amount,
+      }));
+    });
+  });
+}
+```
+
+4. 保存（Ctrl+S）
+5. 上の関数名ドロップダウンで **`checkTenderNames`** を選んで▶実行
+6. 下の「ログ」に出てきた内容をここに貼り付け
+
+---
+
+ログはこんな感じの文字が並ぶはずです：
+```
+{"type":"EXTERNAL","card_brand":null,"source_name":"???","amount":42680}
