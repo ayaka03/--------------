@@ -477,7 +477,7 @@ function buildSquareRows(orders, existingKeys) {
 
       let retGross = 0;
       let retTax = 0;
-      if (order.return_amounts) {
+      if (order.returns && order.returns.length > 0 && order.return_amounts) {
         retTax = order.return_amounts.tax_money?.amount ?? 0;
         retGross = (order.return_amounts.total_money?.amount ?? 0) - retTax;
       }
