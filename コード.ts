@@ -364,7 +364,6 @@ function updateSquareSalesMaster(startDate) {
       ])
       .setFontWeight("bold")
       .setBackground("#f3f3f3");
-    sheet.setFrozenRows(1);
   }
 
   const existingKeys = getExistingKeys(sheet, SQ_COL.KEY + 1);
@@ -571,20 +570,16 @@ function getPaymentType(tender) {
     }
     case "OTHER": {
       const note = (tender.note ?? "").toLowerCase();
-      // オンライン注文（カラーミーと重複するため除外用）
       if (note.includes("オンライン") || note.includes("online"))
         return "オンライン";
-      // 売掛（別タブ管理用）
       if (
         note.includes("売掛") ||
         note.includes("掛け") ||
-        note.includes("かけ")
+        note.includes("aoi 売掛")
       )
-        return "売掛";
-      // クレジット系（テラス・エポス等）→ カード扱い
+        return "ハウスアカウント"; // ← ここで終わり、次の行を削除！
       if (note.includes("クレジット") || note.includes("credit"))
         return "カード";
-      // 電子マネー系
       if (
         note.includes("id") ||
         note.includes("マナカ") ||
@@ -595,14 +590,10 @@ function getPaymentType(tender) {
         note.includes("pasmo")
       )
         return "電子マネー";
-      // 金シャチ系
       if (note.includes("金シャチ") || note.includes("きんしゃち"))
         return "その他";
-      // PayPay系（デフォルト）
       return "その他";
     }
-    default:
-      return "その他";
   }
 }
 
@@ -742,8 +733,8 @@ function aggregateMonthlyData(rows) {
       case "PAYMENT": {
         const pt = row[SQ_COL.PAY_TYPE];
         const amt = Number(row[SQ_COL.AMOUNT]);
-        // オンライン・売掛は集計から除外
-        if (pt === "オンライン" || pt === "売掛") break;
+        // オンライン・ハウスアカウントは集計から除外
+        if (pt === "オンライン" || pt === "ハウスアカウント") break;
         if (pt in o.pay) {
           o.pay[pt] += amt;
         } else {
@@ -928,4 +919,146 @@ function checkTenderNames() {
       );
     });
   });
+}
+
+// ============================================================
+// 99. テスト確認用（最後に削除する）
+// ============================================================
+
+function extractFeb2026() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const srcSheet = ss.getSheetByName("Square売上データ");
+
+  // 新しいシートを作成
+  let destSheet = ss.getSheetByName("Square売上データ_2月");
+  if (destSheet) ss.deleteSheet(destSheet);
+  destSheet = ss.insertSheet("Square売上データ_2月");
+
+  const data = srcSheet.getDataRange().getValues();
+  const header = data[0];
+  const febRows = data.slice(1).filter((row) => {
+    const dateVal = row[SQ_COL.DATE];
+    const m =
+      dateVal instanceof Date
+        ? Utilities.formatDate(dateVal, "JST", "yyyy-MM")
+        : String(dateVal).substring(0, 7);
+    return m === "2026-02";
+  });
+
+  destSheet
+    .getRange(1, 1, 1, header.length)
+    .setValues([header])
+    .setFontWeight("bold")
+    .setBackground("#f3f3f3");
+  if (febRows.length > 0) {
+    destSheet.getRange(2, 1, febRows.length, header.length).setValues(febRows);
+  }
+
+  SpreadsheetApp.getUi().alert(`2月分 ${febRows.length} 行を抽出しました！`);
+}
+
+function checkPayTypes() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Square売上データ");
+  const data = sheet.getDataRange().getValues();
+
+  const summary = {};
+  for (const row of data.slice(1)) {
+    const type = row[SQ_COL.TYPE];
+    const pt = row[SQ_COL.PAY_TYPE];
+    if (type === "PAYMENT") {
+      summary[pt] = (summary[pt] ?? 0) + Number(row[SQ_COL.AMOUNT]);
+    }
+  }
+
+  console.log("=== PAYMENT行の支払種別一覧 ===");
+  Object.entries(summary)
+    .sort()
+    .forEach(([pt, amt]) => {
+      console.log(`"${pt}": ¥${amt.toLocaleString()}`);
+    });
+}
+
+function checkOtherPayments() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/8LIDQN5vGU3Bj5cWWxPIhx7ceGPZY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  res.order?.tenders?.forEach((t) => {
+    console.log(
+      JSON.stringify({
+        type: t.type,
+        note: t.note,
+        amount: t.amount_money?.amount,
+      }),
+    );
+  });
+}
+
+function checkUrikakeDate() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const locRes = JSON.parse(
+    UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
+      headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
+    }).getContentText(),
+  );
+
+  let cursor = null;
+  const results = {};
+
+  do {
+    const payload = {
+      location_ids: [locRes.locations[0].id],
+      query: {
+        filter: {
+          closed_at: { start_at: "2026-02-01T00:00:00+09:00" },
+          state_filter: { states: ["COMPLETED"] },
+        },
+      },
+      limit: 500,
+      ...(cursor && { cursor }),
+    };
+
+    const res = JSON.parse(
+      UrlFetchApp.fetch("https://connect.squareup.com/v2/orders/search", {
+        method: "post",
+        headers: sqHeaders,
+        payload: JSON.stringify(payload),
+      }).getContentText(),
+    );
+
+    res.orders?.forEach((order) => {
+      order.tenders?.forEach((tender) => {
+        const note = (tender.note ?? "").toLowerCase();
+        if (note.includes("売掛") || note.includes("aoi 売掛")) {
+          const month = order.closed_at.substring(0, 7);
+          results[month] =
+            (results[month] ?? 0) + (tender.amount_money?.amount ?? 0);
+        }
+      });
+    });
+
+    cursor = res.cursor ?? null;
+  } while (cursor);
+
+  console.log("=== 売掛の月別合計 ===");
+  Object.entries(results)
+    .sort()
+    .forEach(([m, amt]) => {
+      console.log(`${m}: ¥${amt.toLocaleString()}`);
+    });
 }
