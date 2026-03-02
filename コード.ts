@@ -2,205 +2,191 @@
  * インターラーケン売上レポート集計システム
  * SquareサマリーCSVの35項目に完全準拠
  *
- * 前提: @types/google-apps-script がインストール済み
- *   npm install --save-dev @types/google-apps-script
+ * 実行環境: Google Apps Script (V8ランタイム)
+ * VS Code補完: JSDoc + @types/google-apps-script
  */
 
 // ============================================================
-// 型定義 (Type Definitions)
+// JSDoc 型定義 (VS Codeの補完・型チェックに使用)
 // ============================================================
 
-/** アクセストークンなどの設定情報 */
-interface Config {
-  readonly SQUARE_ACCESS_TOKEN: string;
-  readonly COLORME_ACCESS_TOKEN: string;
-  readonly START_DATE: string;
-}
+/**
+ * @typedef {Object} Config
+ * @property {string} SQUARE_ACCESS_TOKEN
+ * @property {string} COLORME_ACCESS_TOKEN
+ * @property {string} START_DATE
+ */
 
-/** カラーミーAPIの注文明細 */
-interface ColormeDetail {
-  id: string | number;
-  product_name: string;
-  unit_num?: string | number;
-  product_num?: string | number;
-  price: string | number;
-}
+/**
+ * @typedef {Object} ColormeDetail
+ * @property {string|number} id
+ * @property {string} product_name
+ * @property {string|number} [unit_num]
+ * @property {string|number} [product_num]
+ * @property {string|number} price
+ */
 
-/** カラーミーAPIの注文 */
-interface ColormeSale {
-  id: string | number;
-  make_date: string | number;
-  details: ColormeDetail[];
-  delivery_total: number;
-  fee_total: number;
-  point_discount: number;
-}
+/**
+ * @typedef {Object} ColormeSale
+ * @property {string|number} id
+ * @property {string|number} make_date
+ * @property {ColormeDetail[]} details
+ * @property {number} delivery_total
+ * @property {number} fee_total
+ * @property {number} point_discount
+ */
 
-/** カラーミーAPIのレスポンス */
-interface ColormeResponse {
-  sales?: ColormeSale[];
-}
+/**
+ * @typedef {Object} ColormeResponse
+ * @property {ColormeSale[]} [sales]
+ */
 
-/** Square APIの金額オブジェクト */
-interface SquareMoney {
-  amount?: number;
-  currency?: string;
-}
+/**
+ * @typedef {Object} SquareMoney
+ * @property {number} [amount]
+ * @property {string} [currency]
+ */
 
-/** Square APIの注文明細行 */
-interface SquareLineItem {
-  name: string;
-  quantity: string;
-  gross_sales_money?: SquareMoney;
-}
+/**
+ * @typedef {Object} SquareLineItem
+ * @property {string} name
+ * @property {string} quantity
+ * @property {SquareMoney} [gross_sales_money]
+ */
 
-/** Square APIの返品 */
-interface SquareReturn {
-  return_amounts?: {
-    gross_return_money?: SquareMoney;
-    tax_money?: SquareMoney;
-  };
-}
+/**
+ * @typedef {Object} SquareReturnAmounts
+ * @property {SquareMoney} [gross_return_money]
+ * @property {SquareMoney} [tax_money]
+ */
 
-/** Square APIの払い戻し */
-interface SquareRefund {
-  return_id?: string;
-  amount_money?: SquareMoney;
-}
+/**
+ * @typedef {Object} SquareReturn
+ * @property {SquareReturnAmounts} [return_amounts]
+ */
 
-/** Square APIのカード情報 */
-interface SquareCardDetails {
-  card_brand?: string;
-}
+/**
+ * @typedef {Object} SquareRefund
+ * @property {string} [return_id]
+ * @property {SquareMoney} [amount_money]
+ */
 
-/** Square APIの外部決済情報 */
-interface SquareExternalDetails {
-  source_name?: string;
-}
+/**
+ * @typedef {Object} SquareCardDetails
+ * @property {string} [card_brand]
+ */
 
-/** Square APIの支払い(Tender) */
-interface SquareTender {
-  type: string;
-  amount_money?: SquareMoney;
-  processing_fee_money?: SquareMoney;
-  card_details?: SquareCardDetails;
-  external_details?: SquareExternalDetails;
-}
+/**
+ * @typedef {Object} SquareExternalDetails
+ * @property {string} [source_name]
+ */
 
-/** Square APIの注文 */
-interface SquareOrder {
-  id: string;
-  closed_at: string;
-  line_items?: SquareLineItem[];
-  returns?: SquareReturn[];
-  refunds?: SquareRefund[];
-  tenders?: SquareTender[];
-  total_tax_money?: SquareMoney;
-  total_discount_money?: SquareMoney;
-}
+/**
+ * @typedef {Object} SquareTender
+ * @property {string} type
+ * @property {SquareMoney} [amount_money]
+ * @property {SquareMoney} [processing_fee_money]
+ * @property {SquareCardDetails} [card_details]
+ * @property {SquareExternalDetails} [external_details]
+ */
 
-/** Square APIの注文検索レスポンス */
-interface SquareOrdersResponse {
-  orders?: SquareOrder[];
-  cursor?: string;
-}
+/**
+ * @typedef {Object} SquareOrder
+ * @property {string} id
+ * @property {string} closed_at
+ * @property {SquareLineItem[]} [line_items]
+ * @property {SquareReturn[]} [returns]
+ * @property {SquareRefund[]} [refunds]
+ * @property {SquareTender[]} [tenders]
+ * @property {SquareMoney} [total_tax_money]
+ * @property {SquareMoney} [total_discount_money]
+ */
 
-/** Square APIのロケーション */
-interface SquareLocation {
-  id: string;
-  name?: string;
-}
+/**
+ * @typedef {Object} SquareOrdersResponse
+ * @property {SquareOrder[]} [orders]
+ * @property {string} [cursor]
+ */
 
-/** Square APIのロケーション一覧レスポンス */
-interface SquareLocationsResponse {
-  locations: SquareLocation[];
-}
+/**
+ * @typedef {Object} SquareLocation
+ * @property {string} id
+ * @property {string} [name]
+ */
 
-/** 月次集計の支払い種別ごとの金額 */
-interface MonthlyPayments {
-  "au PAY": number;
-  "d払い": number;
-  "カード": number;
-  "その他": number;
-  "ハウスアカウント": number;
-  "楽天ペイ": number;
-  "現金": number;
-  "電子マネー": number;
-}
+/**
+ * @typedef {Object} SquareLocationsResponse
+ * @property {SquareLocation[]} locations
+ */
 
-/** 月次集計データ */
-interface MonthlyData {
-  gross: number;
-  tax: number;
-  disc: number;
-  returns: number;
-  refund: number;
-  fees: number;
-  items: number;
-  txAll: Set<string>;
-  txItems: Set<string>;
-  txReturns: Set<string>;
-  txDiscounts: Set<string>;
-  txTax: Set<string>;
-  txTenders: Set<string>;
-  pay: MonthlyPayments;
-}
+/**
+ * @typedef {Object} MonthlyPayments
+ * @property {number} auPay
+ * @property {number} dBarai
+ * @property {number} card
+ * @property {number} other
+ * @property {number} houseAccount
+ * @property {number} rakuten
+ * @property {number} cash
+ * @property {number} eMoney
+ */
 
-/** 月次集計マップ */
-type MonthlyMap = Record<string, MonthlyData>;
-
-/** Square売上データシートの行タイプ */
-type RowType = "SALE" | "SUMMARY" | "PAYMENT";
-
-/** カラーミー売上データシートの列インデックス (0始まり) */
-const CM_COL = {
-  DATE: 0,
-  ORDER_ID: 1,
-  PRODUCT_NAME: 2,
-  TYPE: 3,
-  QTY: 4,
-  PRICE: 5,
-  SUBTOTAL: 6,
-  DELIVERY: 7,
-  FEE: 8,
-  POINT_DISCOUNT: 9,
-  KEY: 10,
-} as const;
-
-/** Square売上データシートの列インデックス (0始まり) */
-const SQ_COL = {
-  DATE: 0,
-  ORDER_ID: 1,
-  NAME: 2,
-  TYPE: 3,
-  QTY: 4,
-  GROSS: 5,
-  TAX: 6,
-  DISC: 7,
-  PAY_TYPE: 8,
-  FEE: 9,
-  KEY: 10,
-  RETURN_GROSS: 11,
-  RETURN_TAX: 12,
-  AMOUNT: 13,
-} as const;
+/**
+ * @typedef {Object} MonthlyData
+ * @property {number} gross
+ * @property {number} tax
+ * @property {number} disc
+ * @property {number} returns
+ * @property {number} refund
+ * @property {number} fees
+ * @property {number} items
+ * @property {Set<string>} txAll
+ * @property {Set<string>} txItems
+ * @property {Set<string>} txReturns
+ * @property {Set<string>} txDiscounts
+ * @property {Set<string>} txTax
+ * @property {Set<string>} txTenders
+ * @property {Record<string, number>} pay
+ */
 
 // ============================================================
-// 設定 (Config)
+// 定数 (Constants)
 // ============================================================
 
-const CONFIG: Config = {
+/** @type {Config} */
+const CONFIG = {
   SQUARE_ACCESS_TOKEN: 'EAAAl3VlBqnOihdeDGqTuOyfuE8juXQrSNR6cgpX-RDtVxxFyr4d7daw5jil-oow',
   COLORME_ACCESS_TOKEN: '4fd03a83f636c4517b72bf23cde52b797fff500263e34e3f26ac2c26f3c10ee7',
   START_DATE: '2026-02-01',
 };
+
+/** カラーミー売上データシートの列インデックス (0始まり) */
+const CM_COL = {
+  DATE: 0, ORDER_ID: 1, PRODUCT_NAME: 2, TYPE: 3,
+  QTY: 4, PRICE: 5, SUBTOTAL: 6, DELIVERY: 7,
+  FEE: 8, POINT_DISCOUNT: 9, KEY: 10,
+};
+
+/** Square売上データシートの列インデックス (0始まり) */
+const SQ_COL = {
+  DATE: 0, ORDER_ID: 1, NAME: 2, TYPE: 3,
+  QTY: 4, GROSS: 5, TAX: 6, DISC: 7,
+  PAY_TYPE: 8, FEE: 9, KEY: 10,
+  RETURN_GROSS: 11, RETURN_TAX: 12, AMOUNT: 13,
+};
+
+/** 電子マネーとして扱うカードブランドのSet */
+const ELECTRONIC_MONEY_BRANDS = new Set([
+  'ID', 'QUICPAY', 'SUICA', 'PASMO', 'ICOCA',
+  'SUGOCA', 'NIMOCA', 'HAYAKAKEN', 'KITACA', 'TOICA', 'MANACA',
+]);
 
 // ============================================================
 // エントリーポイント (Entry Points)
 // ============================================================
 
 /** スプレッドシートを開いたときにカスタムメニューを追加する */
-function onOpen(): void {
+function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🚀インターラーケン操作')
     .addItem('1. カラーミー売上を更新', 'runColormeUpdate')
@@ -211,13 +197,13 @@ function onOpen(): void {
 }
 
 /** カラーミー売上を更新してレポートを最終化する */
-function runColormeUpdate(): void {
+function runColormeUpdate() {
   updateColormeSalesMaster(CONFIG.START_DATE);
   finalizeUpdate();
 }
 
 /** Square売上を更新してレポートを最終化する */
-function runSquareUpdate(): void {
+function runSquareUpdate() {
   updateSquareSalesMaster(CONFIG.START_DATE);
   finalizeUpdate();
 }
@@ -228,48 +214,48 @@ function runSquareUpdate(): void {
 
 /**
  * カラーミー売上データマスタを更新する
- * @param startDate - 取得開始日 (例: "2026-02-01")
+ * @param {string} startDate - 取得開始日 (例: "2026-02-01")
  */
-function updateColormeSalesMaster(startDate: string): void {
-  const ss: GoogleAppsScript.Spreadsheet.Spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet: GoogleAppsScript.Spreadsheet.Sheet = getOrCreateSheet(ss, 'カラーミー売上データ');
-  const existingKeys: Set<string> = getExistingKeys(sheet, CM_COL.KEY + 1); // 1始まり列番号
+function updateColormeSalesMaster(startDate) {
+  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
+  const sheet = getOrCreateSheet(ss, 'カラーミー売上データ');
+
+  const existingKeys = getExistingKeys(sheet, CM_COL.KEY + 1);
   let offset = 0;
 
   try {
     while (true) {
       const url = `https://api.shop-pro.jp/v1/sales.json?make_date_min=${startDate}&limit=100&offset=${offset}`;
-      const options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
+
+      /** @type {GoogleAppsScript.URL_Fetch.URLFetchRequestOptions} */
+      const options = {
         headers: { Authorization: `Bearer ${CONFIG.COLORME_ACCESS_TOKEN}` },
       };
-      const res = JSON.parse(
-        UrlFetchApp.fetch(url, options).getContentText()
-      ) as ColormeResponse;
+
+      /** @type {ColormeResponse} */
+      const res = JSON.parse(UrlFetchApp.fetch(url, options).getContentText());
 
       if (!res.sales || res.sales.length === 0) break;
 
-      const newRows: (string | number)[][] = [];
+      /** @type {Array<Array<string|number>>} */
+      const newRows = [];
 
       for (const sale of res.sales) {
-        const saleDate: string = parseSaleDate(sale.make_date);
+        const saleDate = parseSaleDate(sale.make_date);
 
         for (const detail of sale.details) {
-          const qty: number = Number(detail.unit_num) || Number(detail.product_num) || 1;
-          const price: number = Number(detail.price);
+          const qty = Number(detail.unit_num) || Number(detail.product_num) || 1;
+          const price = Number(detail.price);
           const key = `${sale.id}_D_${detail.id}`;
 
           if (!existingKeys.has(key)) {
             newRows.push([
-              saleDate,
-              sale.id,
-              detail.product_name,
-              'SALE',
-              qty,
-              price,
-              qty * price,
-              sale.delivery_total,
-              sale.fee_total,
-              sale.point_discount,
+              saleDate, sale.id, detail.product_name, 'SALE',
+              qty, price, qty * price,
+              sale.delivery_total, sale.fee_total, sale.point_discount,
               key,
             ]);
           }
@@ -284,15 +270,16 @@ function updateColormeSalesMaster(startDate: string): void {
       offset += 100;
     }
   } catch (e) {
-    console.error(`CM Error: ${(e as Error).message}`);
+    console.error(`CM Error: ${e.message}`);
   }
 }
 
 /**
- * カラーミーの sale.make_date を "yyyy-MM-dd" 形式に変換する
- * @param raw - UNIX秒タイムスタンプ(数値) または "yyyy-MM-dd HH:mm:ss" 文字列
+ * カラーミーの make_date を "yyyy-MM-dd" 形式に変換する
+ * @param {string|number} raw - UNIXタイムスタンプ(秒)または "yyyy-MM-dd HH:mm:ss" 文字列
+ * @returns {string}
  */
-function parseSaleDate(raw: string | number): string {
+function parseSaleDate(raw) {
   if (typeof raw === 'number') {
     return Utilities.formatDate(new Date(raw * 1000), 'JST', 'yyyy-MM-dd');
   }
@@ -305,28 +292,34 @@ function parseSaleDate(raw: string | number): string {
 
 /**
  * Square売上データマスタを更新する
- * @param startDate - 取得開始日 (例: "2026-02-01")
+ * @param {string} startDate - 取得開始日 (例: "2026-02-01")
  */
-function updateSquareSalesMaster(startDate: string): void {
-  const ss: GoogleAppsScript.Spreadsheet.Spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet: GoogleAppsScript.Spreadsheet.Sheet = getOrCreateSheet(ss, 'Square売上データ');
-  const existingKeys: Set<string> = getExistingKeys(sheet, SQ_COL.KEY + 1);
-  const startAt: string = new Date(`${startDate}T00:00:00+09:00`).toISOString();
+function updateSquareSalesMaster(startDate) {
+  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  const sqHeaders: GoogleAppsScript.URL_Fetch.HttpHeaders = {
+  /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
+  const sheet = getOrCreateSheet(ss, 'Square売上データ');
+
+  const existingKeys = getExistingKeys(sheet, SQ_COL.KEY + 1);
+  const startAt = new Date(`${startDate}T00:00:00+09:00`).toISOString();
+
+  /** @type {GoogleAppsScript.URL_Fetch.HttpHeaders} */
+  const sqHeaders = {
     Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
     'Content-Type': 'application/json',
   };
 
   try {
+    /** @type {SquareLocationsResponse} */
     const locRes = JSON.parse(
       UrlFetchApp.fetch('https://connect.squareup.com/v2/locations', {
         headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
       }).getContentText()
-    ) as SquareLocationsResponse;
+    );
 
     for (const loc of locRes.locations) {
-      let cursor: string | null | undefined = null;
+      let cursor = null;
 
       do {
         const payload = {
@@ -337,51 +330,53 @@ function updateSquareSalesMaster(startDate: string): void {
               state_filter: { states: ['COMPLETED'] },
             },
           },
-          cursor: cursor ?? undefined,
+          ...(cursor && { cursor }),
         };
 
+        /** @type {SquareOrdersResponse} */
         const res = JSON.parse(
           UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
             method: 'post',
             headers: sqHeaders,
             payload: JSON.stringify(payload),
           }).getContentText()
-        ) as SquareOrdersResponse;
+        );
 
         if (res.orders) {
-          const newRows: (string | number)[][] = buildSquareRows(res.orders, existingKeys);
+          const newRows = buildSquareRows(res.orders, existingKeys);
           if (newRows.length > 0) {
             sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 14).setValues(newRows);
           }
         }
 
-        cursor = res.cursor;
+        cursor = res.cursor ?? null;
       } while (cursor);
     }
   } catch (e) {
-    console.error(`SQ Error: ${(e as Error).message}`);
+    console.error(`SQ Error: ${e.message}`);
   }
 }
 
 /**
  * SquareのOrderリストからシートに書き込む行データを生成する
+ * @param {SquareOrder[]} orders
+ * @param {Set<string>} existingKeys
+ * @returns {Array<Array<string|number>>}
  */
-function buildSquareRows(
-  orders: SquareOrder[],
-  existingKeys: Set<string>
-): (string | number)[][] {
-  const rows: (string | number)[][] = [];
+function buildSquareRows(orders, existingKeys) {
+  /** @type {Array<Array<string|number>>} */
+  const rows = [];
 
   for (const order of orders) {
-    const dateStr: string = Utilities.formatDate(new Date(order.closed_at), 'JST', 'yyyy-MM-dd');
-    const id: string = order.id;
+    const dateStr = Utilities.formatDate(new Date(order.closed_at), 'JST', 'yyyy-MM-dd');
+    const id = order.id;
 
     // 1. 商品売上行 (SALE)
     if (order.line_items) {
-      order.line_items.forEach((item: SquareLineItem, i: number) => {
+      order.line_items.forEach((item, i) => {
         const key = `${id}_L_${i}`;
         if (!existingKeys.has(key)) {
-          const gross: number = item.gross_sales_money?.amount ?? 0;
+          const gross = item.gross_sales_money?.amount ?? 0;
           rows.push([dateStr, id, item.name, 'SALE', Number(item.quantity), gross, 0, 0, '', 0, key, 0, 0, 0]);
         }
       });
@@ -390,18 +385,18 @@ function buildSquareRows(
     // 2. 注文サマリー行 (SUMMARY)
     const sumKey = `${id}_SUM`;
     if (!existingKeys.has(sumKey)) {
-      const totalTax: number = order.total_tax_money?.amount ?? 0;
-      const totalDisc: number = order.total_discount_money?.amount ?? 0;
+      const totalTax = order.total_tax_money?.amount ?? 0;
+      const totalDisc = order.total_discount_money?.amount ?? 0;
 
       let retGross = 0;
       let retTax = 0;
-      order.returns?.forEach((r: SquareReturn) => {
+      order.returns?.forEach((r) => {
         retGross += r.return_amounts?.gross_return_money?.amount ?? 0;
         retTax += r.return_amounts?.tax_money?.amount ?? 0;
       });
 
       let manualRefund = 0;
-      order.refunds?.forEach((rf: SquareRefund) => {
+      order.refunds?.forEach((rf) => {
         if (!rf.return_id) manualRefund += rf.amount_money?.amount ?? 0;
       });
 
@@ -409,12 +404,12 @@ function buildSquareRows(
     }
 
     // 3. 支払い行 (PAYMENT)
-    order.tenders?.forEach((tender: SquareTender, i: number) => {
+    order.tenders?.forEach((tender, i) => {
       const key = `${id}_T_${i}`;
       if (!existingKeys.has(key)) {
-        const payType: string = getPaymentType(tender);
-        const amt: number = tender.amount_money?.amount ?? 0;
-        const fee: number = tender.processing_fee_money?.amount ?? 0;
+        const payType = getPaymentType(tender);
+        const amt = tender.amount_money?.amount ?? 0;
+        const fee = tender.processing_fee_money?.amount ?? 0;
         rows.push([dateStr, id, `支払い: ${payType}`, 'PAYMENT', 0, 0, 0, 0, payType, fee, key, 0, 0, amt]);
       }
     });
@@ -425,15 +420,10 @@ function buildSquareRows(
 
 /**
  * SquareのTenderオブジェクトから支払い種別名を返す
- * @param tender - Square Tender オブジェクト
- * @returns 支払い種別の日本語名
+ * @param {SquareTender} tender
+ * @returns {string}
  */
-function getPaymentType(tender: SquareTender): string {
-  const ELECTRONIC_MONEY_BRANDS = new Set([
-    'ID', 'QUICPAY', 'SUICA', 'PASMO', 'ICOCA',
-    'SUGOCA', 'NIMOCA', 'HAYAKAKEN', 'KITACA', 'TOICA', 'MANACA',
-  ]);
-
+function getPaymentType(tender) {
   switch (tender.type) {
     case 'CARD': {
       const brand = (tender.card_details?.card_brand ?? '').toUpperCase();
@@ -461,15 +451,17 @@ function getPaymentType(tender: SquareTender): string {
 // ============================================================
 
 /** すべての月次集計を再計算してSheetに書き出す */
-function recalculateAllSummaries(): void {
-  const ss: GoogleAppsScript.Spreadsheet.Spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const sqSheet: GoogleAppsScript.Spreadsheet.Sheet | null = ss.getSheetByName('Square売上データ');
+function recalculateAllSummaries() {
+  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const sqSheet = ss.getSheetByName('Square売上データ');
   if (!sqSheet) return;
 
-  const data: unknown[][] = sqSheet.getDataRange().getValues();
-  const monthly: MonthlyMap = aggregateMonthlyData(data.slice(1)); // ヘッダー行をスキップ
+  const data = sqSheet.getDataRange().getValues();
+  const monthly = aggregateMonthlyData(data.slice(1)); // ヘッダー行をスキップ
 
-  const headers: string[] = [
+  const headers = [
     '年月', '総売上高', '商品', 'サービス料', '返品', 'ディスカウントと無料提供',
     '純売上高', '繰延売上', 'ギフトカード売上', '税金', '金額を指定した払い戻し',
     '売上合計', '受取合計額',
@@ -480,10 +472,7 @@ function recalculateAllSummaries(): void {
     'ギフトカード売上取引履歴', '税金取引履歴', '総売上取引履歴', '受取合計額の取引履歴',
   ];
 
-  const rows: (string | number)[][] = Object.keys(monthly)
-    .sort()
-    .reverse()
-    .map((m: string) => buildSummaryRow(m, monthly[m]));
+  const rows = Object.keys(monthly).sort().reverse().map((m) => buildSummaryRow(m, monthly[m]));
 
   writeToSheet(getOrCreateSheet(ss, 'Square月次売上'), headers, rows);
   SpreadsheetApp.getUi().alert('すべてのレポートを更新しました！😍');
@@ -491,13 +480,16 @@ function recalculateAllSummaries(): void {
 
 /**
  * Square売上データシートの行データから月次集計マップを構築する
+ * @param {Array<Array<any>>} rows
+ * @returns {Record<string, MonthlyData>}
  */
-function aggregateMonthlyData(rows: unknown[][]): MonthlyMap {
-  const monthly: MonthlyMap = {};
+function aggregateMonthlyData(rows) {
+  /** @type {Record<string, MonthlyData>} */
+  const monthly = {};
 
   for (const row of rows) {
     const dateVal = row[SQ_COL.DATE];
-    const m: string = dateVal instanceof Date
+    const m = dateVal instanceof Date
       ? Utilities.formatDate(dateVal, 'JST', 'yyyy-MM')
       : String(dateVal).substring(0, 7);
 
@@ -512,8 +504,8 @@ function aggregateMonthlyData(rows: unknown[][]): MonthlyMap {
       };
     }
 
-    const o: MonthlyData = monthly[m];
-    const type = row[SQ_COL.TYPE] as RowType;
+    const o = monthly[m];
+    const type = row[SQ_COL.TYPE];
     const id = String(row[SQ_COL.ORDER_ID]);
 
     switch (type) {
@@ -537,7 +529,7 @@ function aggregateMonthlyData(rows: unknown[][]): MonthlyMap {
         break;
 
       case 'PAYMENT': {
-        const pt = row[SQ_COL.PAY_TYPE] as keyof MonthlyPayments;
+        const pt = row[SQ_COL.PAY_TYPE];
         const amt = Number(row[SQ_COL.AMOUNT]);
         if (pt in o.pay) {
           o.pay[pt] += amt;
@@ -556,11 +548,14 @@ function aggregateMonthlyData(rows: unknown[][]): MonthlyMap {
 
 /**
  * 月次集計データから35列のサマリー行を構築する
+ * @param {string} month
+ * @param {MonthlyData} o
+ * @returns {Array<string|number>}
  */
-function buildSummaryRow(month: string, o: MonthlyData): (string | number)[] {
-  const netSales: number = o.gross + o.returns + o.disc;
-  const totalSales: number = netSales + o.tax + o.refund;
-  const collected: number = totalSales - (o.pay['ハウスアカウント'] ?? 0);
+function buildSummaryRow(month, o) {
+  const netSales = o.gross + o.returns + o.disc;
+  const totalSales = netSales + o.tax + o.refund;
+  const collected = totalSales - (o.pay['ハウスアカウント'] ?? 0);
 
   return [
     month, o.gross, o.gross, 0, o.returns, o.disc, netSales, 0, 0, o.tax, o.refund,
@@ -577,14 +572,13 @@ function buildSummaryRow(month: string, o: MonthlyData): (string | number)[] {
 // 4. 共通ユーティリティ (Utilities)
 // ============================================================
 
-/**
- * 全シートのデータをソートして月次集計を再実行する
- */
-function finalizeUpdate(): void {
-  const ss: GoogleAppsScript.Spreadsheet.Spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+/** 全シートのデータをソートして月次集計を再実行する */
+function finalizeUpdate() {
+  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   for (const name of ['Square売上データ', 'カラーミー売上データ']) {
-    const s: GoogleAppsScript.Spreadsheet.Sheet | null = ss.getSheetByName(name);
+    const s = ss.getSheetByName(name);
     if (s) sortSheetByDate(s);
   }
 
@@ -593,55 +587,47 @@ function finalizeUpdate(): void {
 
 /**
  * シートを名前で取得し、存在しない場合は新規作成する
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss
+ * @param {string} name
+ * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
-function getOrCreateSheet(
-  ss: GoogleAppsScript.Spreadsheet.Spreadsheet,
-  name: string
-): GoogleAppsScript.Spreadsheet.Sheet {
+function getOrCreateSheet(ss, name) {
   return ss.getSheetByName(name) ?? ss.insertSheet(name);
 }
 
 /**
  * シートの指定列から既存のキーをSetで返す
- * @param sheet - 対象シート
- * @param keyColumn - キーが入っている列番号 (1始まり)
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {number} keyColumn - キーが入っている列番号 (1始まり)
+ * @returns {Set<string>}
  */
-function getExistingKeys(
-  sheet: GoogleAppsScript.Spreadsheet.Sheet,
-  keyColumn: number
-): Set<string> {
-  const lastRow: number = sheet.getLastRow();
-  if (lastRow < 2) return new Set<string>();
-  return new Set<string>(
-    sheet.getRange(2, keyColumn, lastRow - 1, 1).getValues().map((r: unknown[]) => String(r[0]))
+function getExistingKeys(sheet, keyColumn) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return new Set();
+  return new Set(
+    sheet.getRange(2, keyColumn, lastRow - 1, 1).getValues().map((r) => String(r[0]))
   );
 }
 
 /**
  * シートのデータ行を日付の降順でソートする (2行目以降)
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
  */
-function sortSheetByDate(sheet: GoogleAppsScript.Spreadsheet.Sheet): void {
-  const lastRow: number = sheet.getLastRow();
+function sortSheetByDate(sheet) {
+  const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  sheet
-    .getRange(2, 1, lastRow - 1, sheet.getLastColumn())
-    .sort({ column: 1, ascending: false });
+  sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).sort({ column: 1, ascending: false });
 }
 
 /**
  * シートをクリアしてヘッダーとデータを書き込む
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {string[]} headers
+ * @param {Array<Array<string|number>>} rows
  */
-function writeToSheet(
-  sheet: GoogleAppsScript.Spreadsheet.Sheet,
-  headers: string[],
-  rows: (string | number)[][]
-): void {
+function writeToSheet(sheet, headers, rows) {
   sheet.clear();
-  sheet
-    .getRange(1, 1, 1, headers.length)
-    .setValues([headers])
-    .setFontWeight('bold')
-    .setBackground('#f3f3f3');
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#f3f3f3');
   if (rows.length > 0) {
     sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   }
