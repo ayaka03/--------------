@@ -545,17 +545,19 @@ function aggregateMonthlyData(rows) {
         break;
 
       case 'PAYMENT': {
-        const pt = row[SQ_COL.PAY_TYPE];
-        const amt = Number(row[SQ_COL.AMOUNT]);
-        if (pt in o.pay) {
-          o.pay[pt] += amt;
-        } else {
-          o.pay['その他'] += amt;
-        }
-        o.fees += Number(row[SQ_COL.FEE]);
-        o.txTenders.add(id);
-        break;
-      }
+  const pt = row[SQ_COL.PAY_TYPE];
+  const amt = Number(row[SQ_COL.AMOUNT]);
+  // オンライン・売掛は集計から除外
+  if (pt === 'オンライン' || pt === '売掛') break;
+  if (pt in o.pay) {
+    o.pay[pt] += amt;
+  } else {
+    o.pay['その他'] += amt;
+  }
+  o.fees += Number(row[SQ_COL.FEE]);
+  o.txTenders.add(id);
+  break;
+}
     }
   }
 
