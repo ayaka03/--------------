@@ -477,20 +477,19 @@ function buildSquareRows(orders, existingKeys) {
 
       let retGross = 0;
       let retTax = 0;
+      let manualRefund = 0;
+
       if (order.return_amounts) {
         const tax = order.return_amounts.tax_money?.amount ?? 0;
         const total = order.return_amounts.total_money?.amount ?? 0;
         if (tax > 0) {
-          // 税金があるもの→返品
           retTax = tax;
           retGross = total - tax;
         } else {
-          // 税金がないもの→払い戻し
           manualRefund = -total;
         }
       }
 
-      let manualRefund = manualRefund ?? 0;
       order.refunds?.forEach((rf) => {
         if (!rf.return_id) manualRefund += rf.amount_money?.amount ?? 0;
       });
