@@ -552,6 +552,8 @@ function getPaymentType(tender) {
       const brand = (tender.card_details?.card_brand ?? "").toUpperCase();
       return ELECTRONIC_MONEY_BRANDS.has(brand) ? "電子マネー" : "カード";
     }
+    case "WALLET":
+      return "その他";
     case "CASH":
       return "現金";
     case "HOUSE_ACCOUNT":
@@ -733,8 +735,19 @@ function aggregateMonthlyData(rows) {
       case "PAYMENT": {
         const pt = row[SQ_COL.PAY_TYPE];
         const amt = Number(row[SQ_COL.AMOUNT]);
-        // オンライン・ハウスアカウントは集計から除外
-        if (pt === "オンライン" || pt === "ハウスアカウント") break;
+        if (pt === "オンライン") break;
+        if (pt === "") {
+          o.pay["ハウスアカウント"] += amt;
+          o.fees += Number(row[SQ_COL.FEE]);
+          o.txTenders.add(id);
+          break;
+        }
+        if (pt === "ハウスアカウント") {
+          o.pay["ハウスアカウント"] += amt;
+          o.fees += Number(row[SQ_COL.FEE]);
+          o.txTenders.add(id);
+          break;
+        }
         if (pt in o.pay) {
           o.pay[pt] += amt;
         } else {
@@ -921,9 +934,12 @@ function checkTenderNames() {
   });
 }
 
-// ============================================================
-// 99. テスト確認用（最後に削除する）
-// ============================================================
+/**
+ *
+ *
+ * テスト用コード
+ *
+ */
 
 function extractFeb2026() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1061,4 +1077,139 @@ function checkUrikakeDate() {
     .forEach(([m, amt]) => {
       console.log(`${m}: ¥${amt.toLocaleString()}`);
     });
+}
+
+function checkSingleOrder() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/C0lkuh7rJoSkQzQ0lCQbDCyRqcKZY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  res.order?.tenders?.forEach((t) => {
+    console.log(
+      JSON.stringify({
+        type: t.type,
+        note: t.note,
+        card_brand: t.card_details?.card_brand,
+        amount: t.amount_money?.amount,
+      }),
+    );
+  });
+}
+
+function checkEmptyPayment() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/aWKpIkvS0EAODiUhPVA68sjipZeZY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  res.order?.tenders?.forEach((t) => {
+    console.log(
+      JSON.stringify({
+        type: t.type,
+        note: t.note,
+        card_brand: t.card_details?.card_brand,
+        amount: t.amount_money?.amount,
+      }),
+    );
+  });
+}
+
+function updateSquare2026Feb() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const existing = ss.getSheetByName("Square売上データ");
+  if (existing) ss.deleteSheet(existing);
+  const sheet = ss.insertSheet("Square売上データ");
+
+  sheet
+    .getRange(1, 1, 1, 14)
+    .setValues([
+      [
+        "日付",
+        "注文ID",
+        "商品名",
+        "種別",
+        "数量",
+        "売上",
+        "税金",
+        "ディスカウント",
+        "支払種別",
+        "手数料",
+        "キー",
+        "返品売上",
+        "返品税金",
+        "金額",
+      ],
+    ])
+    .setFontWeight("bold")
+    .setBackground("#f3f3f3");
+
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const locRes = JSON.parse(
+    UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
+      headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
+    }).getContentText(),
+  );
+
+  for (const loc of locRes.locations) {
+    let cursor = null;
+    do {
+      const payload = {
+        location_ids: [loc.id],
+        query: {
+          filter: {
+            closed_at: { start_at: "2026-02-01T00:00:00+09:00" },
+            state_filter: { states: ["COMPLETED"] },
+          },
+        },
+        ...(cursor && { cursor }),
+      };
+
+      const res = JSON.parse(
+        UrlFetchApp.fetch("https://connect.squareup.com/v2/orders/search", {
+          method: "post",
+          headers: sqHeaders,
+          payload: JSON.stringify(payload),
+        }).getContentText(),
+      );
+
+      if (res.orders) {
+        const newRows = buildSquareRows(res.orders, new Set());
+        if (newRows.length > 0) {
+          sheet
+            .getRange(sheet.getLastRow() + 1, 1, newRows.length, 14)
+            .setValues(newRows);
+        }
+      }
+
+      cursor = res.cursor ?? null;
+    } while (cursor);
+  }
+
+  SpreadsheetApp.getUi().alert(
+    "取得完了！次は extractFeb2026() を実行してください",
+  );
 }
