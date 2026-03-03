@@ -3,157 +3,12 @@
  * SquareサマリーCSVの35項目に完全準拠
  *
  * 実行環境: Google Apps Script (V8ランタイム)
- * VS Code補完: JSDoc + @types/google-apps-script
- */
-
-// ============================================================
-// JSDoc 型定義 (VS Codeの補完・型チェックに使用)
-// ============================================================
-
-/**
- * @typedef {Object} Config
- * @property {string} SQUARE_ACCESS_TOKEN
- * @property {string} COLORME_ACCESS_TOKEN
- * @property {string} START_DATE
- */
-
-/**
- * @typedef {Object} ColormeDetail
- * @property {string|number} id
- * @property {string} product_name
- * @property {string|number} [unit_num]
- * @property {string|number} [product_num]
- * @property {string|number} price
- */
-
-/**
- * @typedef {Object} ColormeSale
- * @property {string|number} id
- * @property {string|number} make_date
- * @property {ColormeDetail[]} details
- * @property {number} delivery_total
- * @property {number} fee_total
- * @property {number} point_discount
- */
-
-/**
- * @typedef {Object} ColormeResponse
- * @property {ColormeSale[]} [sales]
- */
-
-/**
- * @typedef {Object} SquareMoney
- * @property {number} [amount]
- * @property {string} [currency]
- */
-
-/**
- * @typedef {Object} SquareLineItem
- * @property {string} name
- * @property {string} quantity
- * @property {SquareMoney} [gross_sales_money]
- */
-
-/**
- * @typedef {Object} SquareReturnAmounts
- * @property {SquareMoney} [gross_return_money]
- * @property {SquareMoney} [tax_money]
- */
-
-/**
- * @typedef {Object} SquareReturn
- * @property {SquareReturnAmounts} [return_amounts]
- */
-
-/**
- * @typedef {Object} SquareRefund
- * @property {string} [return_id]
- * @property {SquareMoney} [amount_money]
- */
-
-/**
- * @typedef {Object} SquareCardDetails
- * @property {string} [card_brand]
- */
-
-/**
- * @typedef {Object} SquareExternalDetails
- * @property {string} [source_name]
- */
-
-/**
- * @typedef {Object} SquareTender
- * @property {string} type
- * @property {SquareMoney} [amount_money]
- * @property {SquareMoney} [processing_fee_money]
- * @property {SquareCardDetails} [card_details]
- * @property {SquareExternalDetails} [external_details]
- */
-
-/**
- * @typedef {Object} SquareOrder
- * @property {string} id
- * @property {string} closed_at
- * @property {SquareLineItem[]} [line_items]
- * @property {SquareReturn[]} [returns]
- * @property {SquareRefund[]} [refunds]
- * @property {SquareTender[]} [tenders]
- * @property {SquareMoney} [total_tax_money]
- * @property {SquareMoney} [total_discount_money]
- */
-
-/**
- * @typedef {Object} SquareOrdersResponse
- * @property {SquareOrder[]} [orders]
- * @property {string} [cursor]
- */
-
-/**
- * @typedef {Object} SquareLocation
- * @property {string} id
- * @property {string} [name]
- */
-
-/**
- * @typedef {Object} SquareLocationsResponse
- * @property {SquareLocation[]} locations
- */
-
-/**
- * @typedef {Object} MonthlyPayments
- * @property {number} auPay
- * @property {number} dBarai
- * @property {number} card
- * @property {number} other
- * @property {number} houseAccount
- * @property {number} rakuten
- * @property {number} cash
- * @property {number} eMoney
- */
-
-/**
- * @typedef {Object} MonthlyData
- * @property {number} gross
- * @property {number} tax
- * @property {number} disc
- * @property {number} returns
- * @property {number} refund
- * @property {number} fees
- * @property {number} items
- * @property {Set<string>} txAll
- * @property {Set<string>} txItems
- * @property {Set<string>} txReturns
- * @property {Set<string>} txDiscounts
- * @property {Set<string>} txTax
- * @property {Set<string>} txTenders
- * @property {Record<string, number>} pay
  */
 
 // ============================================================
 // 定数 (Constants)
 // ============================================================
 
-/** @type {Config} */
 const CONFIG = {
   SQUARE_ACCESS_TOKEN:
     "EAAAl3VlBqnOihdeDGqTuOyfuE8juXQrSNR6cgpX-RDtVxxFyr4d7daw5jil-oow",
@@ -162,7 +17,6 @@ const CONFIG = {
   START_DATE: "2026-02-01",
 };
 
-/** カラーミー売上データシートの列インデックス (0始まり) */
 const CM_COL = {
   DATE: 0,
   ORDER_ID: 1,
@@ -177,7 +31,6 @@ const CM_COL = {
   KEY: 10,
 };
 
-/** Square売上データシートの列インデックス (0始まり) */
 const SQ_COL = {
   DATE: 0,
   ORDER_ID: 1,
@@ -195,7 +48,6 @@ const SQ_COL = {
   AMOUNT: 13,
 };
 
-/** 電子マネーとして扱うカードブランドのSet */
 const ELECTRONIC_MONEY_BRANDS = new Set([
   "ID",
   "QUICPAY",
@@ -211,10 +63,9 @@ const ELECTRONIC_MONEY_BRANDS = new Set([
 ]);
 
 // ============================================================
-// エントリーポイント (Entry Points)
+// エントリーポイント
 // ============================================================
 
-/** スプレッドシートを開いたときにカスタムメニューを追加する */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("🚀インターラーケン操作")
@@ -225,62 +76,44 @@ function onOpen() {
     .addToUi();
 }
 
-/** カラーミー売上を更新してレポートを最終化する */
 function runColormeUpdate() {
   updateColormeSalesMaster(CONFIG.START_DATE);
   finalizeUpdate();
 }
 
-/** Square売上を更新してレポートを最終化する */
 function runSquareUpdate() {
   updateSquareSalesMaster(CONFIG.START_DATE);
   finalizeUpdate();
 }
 
 // ============================================================
-// 1. カラーミー関連 (Colorme)
+// 1. カラーミー関連
 // ============================================================
 
-/**
- * カラーミー売上データマスタを更新する
- * @param {string} startDate - 取得開始日 (例: "2026-02-01")
- */
 function updateColormeSalesMaster(startDate) {
-  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
   const sheet = getOrCreateSheet(ss, "カラーミー売上データ");
-
   const existingKeys = getExistingKeys(sheet, CM_COL.KEY + 1);
   let offset = 0;
 
   try {
     while (true) {
       const url = `https://api.shop-pro.jp/v1/sales.json?make_date_min=${startDate}&limit=100&offset=${offset}`;
-
-      /** @type {GoogleAppsScript.URL_Fetch.URLFetchRequestOptions} */
       const options = {
         headers: { Authorization: `Bearer ${CONFIG.COLORME_ACCESS_TOKEN}` },
       };
-
-      /** @type {ColormeResponse} */
       const res = JSON.parse(UrlFetchApp.fetch(url, options).getContentText());
 
       if (!res.sales || res.sales.length === 0) break;
 
-      /** @type {Array<Array<string|number>>} */
       const newRows = [];
-
       for (const sale of res.sales) {
         const saleDate = parseSaleDate(sale.make_date);
-
         for (const detail of sale.details) {
           const qty =
             Number(detail.unit_num) || Number(detail.product_num) || 1;
           const price = Number(detail.price);
           const key = `${sale.id}_D_${detail.id}`;
-
           if (!existingKeys.has(key)) {
             newRows.push([
               saleDate,
@@ -313,11 +146,6 @@ function updateColormeSalesMaster(startDate) {
   }
 }
 
-/**
- * カラーミーの make_date を "yyyy-MM-dd" 形式に変換する
- * @param {string|number} raw - UNIXタイムスタンプ(秒)または "yyyy-MM-dd HH:mm:ss" 文字列
- * @returns {string}
- */
 function parseSaleDate(raw) {
   if (typeof raw === "number") {
     return Utilities.formatDate(new Date(raw * 1000), "JST", "yyyy-MM-dd");
@@ -326,21 +154,13 @@ function parseSaleDate(raw) {
 }
 
 // ============================================================
-// 2. Square関連 (Square)
+// 2. Square関連
 // ============================================================
 
-/**
- * Square売上データマスタを更新する
- * @param {string} startDate - 取得開始日 (例: "2026-02-01")
- */
 function updateSquareSalesMaster(startDate) {
-  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
   const sheet = getOrCreateSheet(ss, "Square売上データ");
 
-  // ヘッダーがなければ自動で追加
   if (sheet.getLastRow() === 0) {
     sheet
       .getRange(1, 1, 1, 14)
@@ -369,14 +189,15 @@ function updateSquareSalesMaster(startDate) {
   const existingKeys = getExistingKeys(sheet, SQ_COL.KEY + 1);
   const startAt = new Date(`${startDate}T00:00:00+09:00`).toISOString();
 
-  /** @type {GoogleAppsScript.URL_Fetch.HttpHeaders} */
   const sqHeaders = {
     Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
     "Content-Type": "application/json",
   };
 
+  // Payments APIからWALLETのbrandマップを取得
+  const walletBrandMap = fetchWalletBrandMap(startDate, sqHeaders);
+
   try {
-    /** @type {SquareLocationsResponse} */
     const locRes = JSON.parse(
       UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
         headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
@@ -385,7 +206,6 @@ function updateSquareSalesMaster(startDate) {
 
     for (const loc of locRes.locations) {
       let cursor = null;
-
       do {
         const payload = {
           location_ids: [loc.id],
@@ -398,7 +218,6 @@ function updateSquareSalesMaster(startDate) {
           ...(cursor && { cursor }),
         };
 
-        /** @type {SquareOrdersResponse} */
         const res = JSON.parse(
           UrlFetchApp.fetch("https://connect.squareup.com/v2/orders/search", {
             method: "post",
@@ -408,7 +227,11 @@ function updateSquareSalesMaster(startDate) {
         );
 
         if (res.orders) {
-          const newRows = buildSquareRows(res.orders, existingKeys);
+          const newRows = buildSquareRows(
+            res.orders,
+            existingKeys,
+            walletBrandMap,
+          );
           if (newRows.length > 0) {
             sheet
               .getRange(sheet.getLastRow() + 1, 1, newRows.length, 14)
@@ -424,14 +247,33 @@ function updateSquareSalesMaster(startDate) {
   }
 }
 
-/**
- * SquareのOrderリストからシートに書き込む行データを生成する
- * @param {SquareOrder[]} orders
- * @param {Set<string>} existingKeys
- * @returns {Array<Array<string|number>>}
- */
-function buildSquareRows(orders, existingKeys) {
-  /** @type {Array<Array<string|number>>} */
+// ★ WALLETブランドマップ取得（Payments API使用）
+function fetchWalletBrandMap(startDate, sqHeaders) {
+  const brandMap = new Map();
+  let cursor = null;
+
+  do {
+    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}&limit=200`;
+    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+
+    const res = JSON.parse(
+      UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
+    );
+
+    res.payments?.forEach((p) => {
+      if (p.source_type === "WALLET" && p.wallet_details?.brand) {
+        brandMap.set(p.id, p.wallet_details.brand);
+      }
+    });
+
+    cursor = res.cursor ?? null;
+  } while (cursor);
+
+  console.log(`WALLETブランドマップ取得完了: ${brandMap.size}件`);
+  return brandMap;
+}
+
+function buildSquareRows(orders, existingKeys, walletBrandMap) {
   const rows = [];
 
   for (const order of orders) {
@@ -473,10 +315,9 @@ function buildSquareRows(orders, existingKeys) {
     if (!existingKeys.has(sumKey)) {
       const totalTax = order.total_tax_money?.amount ?? 0;
       const totalDisc = order.total_discount_money?.amount ?? 0;
-
-      let retGross = 0;
-      let retTax = 0;
-      let manualRefund = 0;
+      let retGross = 0,
+        retTax = 0,
+        manualRefund = 0;
 
       if (order.return_amounts) {
         const tax = order.return_amounts.tax_money?.amount ?? 0;
@@ -515,7 +356,7 @@ function buildSquareRows(orders, existingKeys) {
     order.tenders?.forEach((tender, i) => {
       const key = `${id}_T_${i}`;
       if (!existingKeys.has(key)) {
-        const payType = getPaymentType(tender);
+        const payType = getPaymentType(tender, walletBrandMap);
         const amt = tender.amount_money?.amount ?? 0;
         const fee = tender.processing_fee_money?.amount ?? 0;
         rows.push([
@@ -541,22 +382,27 @@ function buildSquareRows(orders, existingKeys) {
   return rows;
 }
 
-/**
- * SquareのTenderオブジェクトから支払い種別名を返す
- * @param {SquareTender} tender
- * @returns {string}
- */
-function getPaymentType(tender) {
+function getPaymentType(tender, walletBrandMap) {
   switch (tender.type) {
     case "CARD": {
       const brand = (tender.card_details?.card_brand ?? "").toUpperCase();
+      if (brand === "FELICA") return "電子マネー";
       return ELECTRONIC_MONEY_BRANDS.has(brand) ? "電子マネー" : "カード";
     }
-    case "WALLET":
+    case "WALLET": {
+      // Payments APIのbrandで正確に分類
+      const brand = (
+        walletBrandMap?.get(tender.payment_id) ?? ""
+      ).toUpperCase();
+      if (brand === "RAKUTEN_PAY") return "楽天ペイ";
+      if (brand === "AU_PAY") return "au PAY";
+      if (brand === "D_BARAI") return "d払い";
       return "その他";
+    }
     case "CASH":
       return "現金";
     case "HOUSE_ACCOUNT":
+    case "SQUARE_ACCOUNT":
       return "ハウスアカウント";
     case "EXTERNAL": {
       const src = (tender.external_details?.source_name ?? "").toUpperCase();
@@ -568,18 +414,20 @@ function getPaymentType(tender) {
       )
         return "d払い";
       if (src.includes("楽天") || src.includes("RAKUTEN")) return "楽天ペイ";
-      return "電子マネー";
+      return "その他";
     }
     case "OTHER": {
       const note = (tender.note ?? "").toLowerCase();
       if (note.includes("オンライン") || note.includes("online"))
-        return "オンライン";
+        return "その他";
+      if (note.includes("代引")) return "その他";
+      if (note.includes("pay pay") || note.includes("paypay")) return "その他";
       if (
         note.includes("売掛") ||
         note.includes("掛け") ||
         note.includes("aoi 売掛")
       )
-        return "ハウスアカウント"; // ← ここで終わり、次の行を削除！
+        return "ハウスアカウント";
       if (note.includes("クレジット") || note.includes("credit"))
         return "カード";
       if (
@@ -587,32 +435,28 @@ function getPaymentType(tender) {
         note.includes("マナカ") ||
         note.includes("manaca") ||
         note.includes("イオン") ||
-        note.includes("kuikku") ||
         note.includes("suica") ||
         note.includes("pasmo")
       )
         return "電子マネー";
-      if (note.includes("金シャチ") || note.includes("きんしゃち"))
-        return "その他";
       return "その他";
     }
+    default:
+      return "その他";
   }
 }
 
 // ============================================================
-// 3. 再集計 (Recalculate - CSV 35項目完全再現)
+// 3. 再集計
 // ============================================================
 
-/** すべての月次集計を再計算してSheetに書き出す */
 function recalculateAllSummaries() {
-  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
   const sqSheet = ss.getSheetByName("Square売上データ");
   if (!sqSheet) return;
 
   const data = sqSheet.getDataRange().getValues();
-  const monthly = aggregateMonthlyData(data.slice(1)); // ヘッダー行をスキップ
+  const monthly = aggregateMonthlyData(data.slice(1));
 
   const headers = [
     "年月",
@@ -657,18 +501,11 @@ function recalculateAllSummaries() {
     .sort()
     .reverse()
     .map((m) => buildSummaryRow(m, monthly[m]));
-
   writeToSheet(getOrCreateSheet(ss, "Square月次売上"), headers, rows);
   SpreadsheetApp.getUi().alert("すべてのレポートを更新しました！😍");
 }
 
-/**
- * Square売上データシートの行データから月次集計マップを構築する
- * @param {Array<Array<any>>} rows
- * @returns {Record<string, MonthlyData>}
- */
 function aggregateMonthlyData(rows) {
-  /** @type {Record<string, MonthlyData>} */
   const monthly = {};
 
   for (const row of rows) {
@@ -736,18 +573,6 @@ function aggregateMonthlyData(rows) {
         const pt = row[SQ_COL.PAY_TYPE];
         const amt = Number(row[SQ_COL.AMOUNT]);
         if (pt === "オンライン") break;
-        if (pt === "") {
-          o.pay["ハウスアカウント"] += amt;
-          o.fees += Number(row[SQ_COL.FEE]);
-          o.txTenders.add(id);
-          break;
-        }
-        if (pt === "ハウスアカウント") {
-          o.pay["ハウスアカウント"] += amt;
-          o.fees += Number(row[SQ_COL.FEE]);
-          o.txTenders.add(id);
-          break;
-        }
         if (pt in o.pay) {
           o.pay[pt] += amt;
         } else {
@@ -763,12 +588,6 @@ function aggregateMonthlyData(rows) {
   return monthly;
 }
 
-/**
- * 月次集計データから35列のサマリー行を構築する
- * @param {string} month
- * @param {MonthlyData} o
- * @returns {Array<string|number>}
- */
 function buildSummaryRow(month, o) {
   const netSales = o.gross + o.returns + o.disc;
   const totalSales = netSales + o.tax + o.refund;
@@ -815,38 +634,22 @@ function buildSummaryRow(month, o) {
 }
 
 // ============================================================
-// 4. 共通ユーティリティ (Utilities)
+// 4. ユーティリティ
 // ============================================================
 
-/** 全シートのデータをソートして月次集計を再実行する */
 function finalizeUpdate() {
-  /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
   for (const name of ["Square売上データ", "カラーミー売上データ"]) {
     const s = ss.getSheetByName(name);
     if (s) sortSheetByDate(s);
   }
-
   recalculateAllSummaries();
 }
 
-/**
- * シートを名前で取得し、存在しない場合は新規作成する
- * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss
- * @param {string} name
- * @returns {GoogleAppsScript.Spreadsheet.Sheet}
- */
 function getOrCreateSheet(ss, name) {
   return ss.getSheetByName(name) ?? ss.insertSheet(name);
 }
 
-/**
- * シートの指定列から既存のキーをSetで返す
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {number} keyColumn - キーが入っている列番号 (1始まり)
- * @returns {Set<string>}
- */
 function getExistingKeys(sheet, keyColumn) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return new Set();
@@ -858,10 +661,6 @@ function getExistingKeys(sheet, keyColumn) {
   );
 }
 
-/**
- * シートのデータ行を日付の降順でソートする (2行目以降)
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- */
 function sortSheetByDate(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
@@ -870,12 +669,6 @@ function sortSheetByDate(sheet) {
     .sort({ column: 1, ascending: false });
 }
 
-/**
- * シートをクリアしてヘッダーとデータを書き込む
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {string[]} headers
- * @param {Array<Array<string|number>>} rows
- */
 function writeToSheet(sheet, headers, rows) {
   sheet.clear();
   sheet
@@ -888,6 +681,10 @@ function writeToSheet(sheet, headers, rows) {
   }
   sheet.setFrozenRows(1);
 }
+
+// ============================================================
+// 5. テスト・確認用関数
+// ============================================================
 
 function checkTenderNames() {
   const sqHeaders = {
@@ -909,7 +706,7 @@ function checkTenderNames() {
         state_filter: { states: ["COMPLETED"] },
       },
     },
-    limit: 10,
+    limit: 100,
   };
 
   const res = JSON.parse(
@@ -927,50 +724,13 @@ function checkTenderNames() {
           type: tender.type,
           card_brand: tender.card_details?.card_brand,
           source_name: tender.external_details?.source_name,
+          wallet_brand: tender.wallet_details?.brand,
+          note: tender.note,
           amount: tender.amount_money?.amount,
         }),
       );
     });
   });
-}
-
-/**
- *
- *
- * テスト用コード
- *
- */
-
-function extractFeb2026() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const srcSheet = ss.getSheetByName("Square売上データ");
-
-  // 新しいシートを作成
-  let destSheet = ss.getSheetByName("Square売上データ_2月");
-  if (destSheet) ss.deleteSheet(destSheet);
-  destSheet = ss.insertSheet("Square売上データ_2月");
-
-  const data = srcSheet.getDataRange().getValues();
-  const header = data[0];
-  const febRows = data.slice(1).filter((row) => {
-    const dateVal = row[SQ_COL.DATE];
-    const m =
-      dateVal instanceof Date
-        ? Utilities.formatDate(dateVal, "JST", "yyyy-MM")
-        : String(dateVal).substring(0, 7);
-    return m === "2026-02";
-  });
-
-  destSheet
-    .getRange(1, 1, 1, header.length)
-    .setValues([header])
-    .setFontWeight("bold")
-    .setBackground("#f3f3f3");
-  if (febRows.length > 0) {
-    destSheet.getRange(2, 1, febRows.length, header.length).setValues(febRows);
-  }
-
-  SpreadsheetApp.getUi().alert(`2月分 ${febRows.length} 行を抽出しました！`);
 }
 
 function checkPayTypes() {
@@ -995,141 +755,36 @@ function checkPayTypes() {
     });
 }
 
-function checkOtherPayments() {
+function checkWalletBrands() {
   const sqHeaders = {
     Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
     "Content-Type": "application/json",
   };
 
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/orders/8LIDQN5vGU3Bj5cWWxPIhx7ceGPZY",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  res.order?.tenders?.forEach((t) => {
-    console.log(
-      JSON.stringify({
-        type: t.type,
-        note: t.note,
-        amount: t.amount_money?.amount,
-      }),
-    );
-  });
-}
-
-function checkUrikakeDate() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const locRes = JSON.parse(
-    UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
-      headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
-    }).getContentText(),
-  );
-
+  const brands = {};
   let cursor = null;
-  const results = {};
 
   do {
-    const payload = {
-      location_ids: [locRes.locations[0].id],
-      query: {
-        filter: {
-          closed_at: { start_at: "2026-02-01T00:00:00+09:00" },
-          state_filter: { states: ["COMPLETED"] },
-        },
-      },
-      limit: 500,
-      ...(cursor && { cursor }),
-    };
+    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent("2026-02-01T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
+    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 
     const res = JSON.parse(
-      UrlFetchApp.fetch("https://connect.squareup.com/v2/orders/search", {
-        method: "post",
-        headers: sqHeaders,
-        payload: JSON.stringify(payload),
-      }).getContentText(),
+      UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
     );
 
-    res.orders?.forEach((order) => {
-      order.tenders?.forEach((tender) => {
-        const note = (tender.note ?? "").toLowerCase();
-        if (note.includes("売掛") || note.includes("aoi 売掛")) {
-          const month = order.closed_at.substring(0, 7);
-          results[month] =
-            (results[month] ?? 0) + (tender.amount_money?.amount ?? 0);
-        }
-      });
+    res.payments?.forEach((p) => {
+      if (p.source_type === "WALLET") {
+        const brand = p.wallet_details?.brand ?? "不明";
+        brands[brand] = (brands[brand] ?? 0) + (p.amount_money?.amount ?? 0);
+      }
     });
 
     cursor = res.cursor ?? null;
   } while (cursor);
 
-  console.log("=== 売掛の月別合計 ===");
-  Object.entries(results)
-    .sort()
-    .forEach(([m, amt]) => {
-      console.log(`${m}: ¥${amt.toLocaleString()}`);
-    });
-}
-
-function checkSingleOrder() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/orders/C0lkuh7rJoSkQzQ0lCQbDCyRqcKZY",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  res.order?.tenders?.forEach((t) => {
-    console.log(
-      JSON.stringify({
-        type: t.type,
-        note: t.note,
-        card_brand: t.card_details?.card_brand,
-        amount: t.amount_money?.amount,
-      }),
-    );
-  });
-}
-
-function checkEmptyPayment() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/orders/aWKpIkvS0EAODiUhPVA68sjipZeZY",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  res.order?.tenders?.forEach((t) => {
-    console.log(
-      JSON.stringify({
-        type: t.type,
-        note: t.note,
-        card_brand: t.card_details?.card_brand,
-        amount: t.amount_money?.amount,
-      }),
-    );
+  console.log("=== WALLETブランド別合計（全件） ===");
+  Object.entries(brands).forEach(([b, amt]) => {
+    console.log(`"${b}": ¥${amt.toLocaleString()}`);
   });
 }
 
@@ -1168,6 +823,9 @@ function updateSquare2026Feb() {
     "Content-Type": "application/json",
   };
 
+  // WALLETブランドマップを取得
+  const walletBrandMap = fetchWalletBrandMap("2026-02-01", sqHeaders);
+
   const locRes = JSON.parse(
     UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
       headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
@@ -1181,7 +839,10 @@ function updateSquare2026Feb() {
         location_ids: [loc.id],
         query: {
           filter: {
-            closed_at: { start_at: "2026-02-01T00:00:00+09:00" },
+            closed_at: {
+              start_at: "2026-02-01T00:00:00+09:00",
+              end_at: "2026-03-01T00:00:00+09:00",
+            },
             state_filter: { states: ["COMPLETED"] },
           },
         },
@@ -1197,7 +858,13 @@ function updateSquare2026Feb() {
       );
 
       if (res.orders) {
-        const newRows = buildSquareRows(res.orders, new Set());
+        // 2月のデータだけ絞り込む
+        const febOrders = res.orders.filter((o) => {
+          const closedAt = new Date(o.closed_at);
+          const jstDate = Utilities.formatDate(closedAt, "JST", "yyyy-MM");
+          return jstDate === "2026-02";
+        });
+        const newRows = buildSquareRows(febOrders, new Set(), walletBrandMap);
         if (newRows.length > 0) {
           sheet
             .getRange(sheet.getLastRow() + 1, 1, newRows.length, 14)
@@ -1210,6 +877,51 @@ function updateSquare2026Feb() {
   }
 
   SpreadsheetApp.getUi().alert(
-    "取得完了！次は extractFeb2026() を実行してください",
+    "取得完了！次は recalculateAllSummaries() を実行してください",
   );
+}
+
+function clearSquareData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const existing = ss.getSheetByName("Square売上データ");
+  if (existing) ss.deleteSheet(existing);
+  SpreadsheetApp.getUi().alert(
+    "シートを削除しました！次は updateSquare2026Feb() を実行してください",
+  );
+}
+
+function checkFirstOrders() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const locRes = JSON.parse(
+    UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
+      headers: { Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}` },
+    }).getContentText(),
+  );
+
+  const payload = {
+    location_ids: [locRes.locations[0].id],
+    query: {
+      filter: {
+        closed_at: { start_at: "2026-02-01T00:00:00+09:00" },
+        state_filter: { states: ["COMPLETED"] },
+      },
+    },
+    limit: 5,
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch("https://connect.squareup.com/v2/orders/search", {
+      method: "post",
+      headers: sqHeaders,
+      payload: JSON.stringify(payload),
+    }).getContentText(),
+  );
+
+  res.orders?.forEach((o) => {
+    console.log(`closed_at: ${o.closed_at}`);
+  });
 }
