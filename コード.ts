@@ -253,7 +253,7 @@ function fetchWalletBrandMap(startDate, sqHeaders) {
   let cursor = null;
 
   do {
-    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}&limit=200`;
+    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 
     const res = JSON.parse(
@@ -261,8 +261,16 @@ function fetchWalletBrandMap(startDate, sqHeaders) {
     );
 
     res.payments?.forEach((p) => {
+      // WALLETのブランド判別
       if (p.source_type === "WALLET" && p.wallet_details?.brand) {
         brandMap.set(p.id, p.wallet_details.brand);
+      }
+      // FELICAの判別
+      if (
+        p.source_type === "CARD" &&
+        p.card_details?.card?.card_brand === "FELICA"
+      ) {
+        brandMap.set(p.id, "FELICA");
       }
     });
 
@@ -313,7 +321,7 @@ function buildSquareRows(orders, existingKeys, walletBrandMap) {
     // 2. 注文サマリー行 (SUMMARY)
     const sumKey = `${id}_SUM`;
     if (!existingKeys.has(sumKey)) {
-      const totalTax = order.total_tax_money?.amount ?? 0;
+      let totalTax = order.total_tax_money?.amount ?? 0;
       const totalDisc = order.total_discount_money?.amount ?? 0;
       let retGross = 0,
         retTax = 0,
@@ -325,14 +333,22 @@ function buildSquareRows(orders, existingKeys, walletBrandMap) {
         if (tax > 0) {
           retTax = tax;
           retGross = total - tax;
+          totalTax -= tax;
+          // refundsのamountをmanualRefundに（税抜き部分）
+          order.refunds?.forEach((rf) => {
+            manualRefund += (rf.amount_money?.amount ?? 0) - tax;
+          });
         } else {
           manualRefund = -total;
         }
       }
 
-      order.refunds?.forEach((rf) => {
-        if (!rf.return_id) manualRefund += rf.amount_money?.amount ?? 0;
-      });
+      // return_amountsがない場合のみrefundsを処理
+      if (retGross === 0 && retTax === 0) {
+        order.refunds?.forEach((rf) => {
+          if (!rf.return_id) manualRefund += rf.amount_money?.amount ?? 0;
+        });
+      }
 
       rows.push([
         dateStr,
@@ -385,6 +401,12 @@ function buildSquareRows(orders, existingKeys, walletBrandMap) {
 function getPaymentType(tender, walletBrandMap) {
   switch (tender.type) {
     case "CARD": {
+      // Payments APIのマップでFELICAか確認
+      const mappedBrand = (
+        walletBrandMap?.get(tender.payment_id) ?? ""
+      ).toUpperCase();
+      if (mappedBrand === "FELICA") return "電子マネー";
+      // Orders APIのcard_brandでも確認（念のため）
       const brand = (tender.card_details?.card_brand ?? "").toUpperCase();
       if (brand === "FELICA") return "電子マネー";
       return ELECTRONIC_MONEY_BRANDS.has(brand) ? "電子マネー" : "カード";
@@ -924,4 +946,347 @@ function checkFirstOrders() {
   res.orders?.forEach((o) => {
     console.log(`closed_at: ${o.closed_at}`);
   });
+}
+
+function checkCardBrandsFromSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Square売上データ");
+  const data = sheet.getDataRange().getValues();
+
+  const brands = {};
+  data.slice(1).forEach((row) => {
+    if (row[SQ_COL.TYPE] === "PAYMENT" && row[SQ_COL.PAY_TYPE] === "カード") {
+      const name = row[SQ_COL.NAME];
+      brands[name] = (brands[name] ?? 0) + Number(row[SQ_COL.AMOUNT]);
+    }
+  });
+
+  console.log("=== カード支払いの名前一覧 ===");
+  Object.entries(brands)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([name, amt]) => {
+      console.log(`"${name}": ¥${amt.toLocaleString()}`);
+    });
+}
+
+function checkCardBrandsFromPayments() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const brands = {};
+  let cursor = null;
+
+  do {
+    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent("2026-02-01T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
+    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+
+    const res = JSON.parse(
+      UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
+    );
+
+    res.payments?.forEach((p) => {
+      if (p.source_type === "CARD") {
+        const brand = p.card_details?.card?.card_brand ?? "不明";
+        brands[brand] = (brands[brand] ?? 0) + (p.amount_money?.amount ?? 0);
+      }
+    });
+
+    cursor = res.cursor ?? null;
+  } while (cursor);
+
+  console.log("=== Payments APIのCARDブランド別合計 ===");
+  Object.entries(brands)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([b, amt]) => {
+      console.log(`"${b}": ¥${amt.toLocaleString()}`);
+    });
+}
+
+function checkRefundOrders() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Square売上データ");
+  const data = sheet.getDataRange().getValues();
+
+  // 返品がある注文IDを探す
+  const refundIds = new Set();
+  data.slice(1).forEach((row) => {
+    if (
+      row[SQ_COL.TYPE] === "SUMMARY" &&
+      Number(row[SQ_COL.RETURN_GROSS]) !== 0
+    ) {
+      refundIds.add(String(row[SQ_COL.ORDER_ID]));
+    }
+  });
+
+  console.log(`返品のある注文: ${refundIds.size}件`);
+
+  // その注文の支払い種別を確認
+  data.slice(1).forEach((row) => {
+    const id = String(row[SQ_COL.ORDER_ID]);
+    if (refundIds.has(id) && row[SQ_COL.TYPE] === "PAYMENT") {
+      console.log(
+        JSON.stringify({
+          id: id,
+          payType: row[SQ_COL.PAY_TYPE],
+          amount: row[SQ_COL.AMOUNT],
+        }),
+      );
+    }
+  });
+}
+
+function checkRefundOrders2() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Square売上データ");
+  const data = sheet.getDataRange().getValues();
+
+  // 返品がある注文IDとその内容を全部表示
+  data.slice(1).forEach((row) => {
+    if (
+      row[SQ_COL.TYPE] === "SUMMARY" &&
+      Number(row[SQ_COL.RETURN_GROSS]) !== 0
+    ) {
+      console.log(
+        JSON.stringify({
+          id: String(row[SQ_COL.ORDER_ID]),
+          returnGross: row[SQ_COL.RETURN_GROSS],
+          returnTax: row[SQ_COL.RETURN_TAX],
+          manualRefund: row[SQ_COL.AMOUNT],
+          tax: row[SQ_COL.TAX],
+        }),
+      );
+    }
+  });
+}
+
+function checkRefundDetails() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/m8rUTTi4Mv2FdTo3kdtbA6seV",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  console.log(JSON.stringify(res.order?.refunds, null, 2));
+  console.log(JSON.stringify(res.order?.return_amounts, null, 2));
+  console.log(JSON.stringify(res.order?.tenders, null, 2));
+}
+
+function checkRefundDetails2() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/0P1qfU9UuBGetHwgQuzjtxieV",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  console.log("refunds:", JSON.stringify(res.order?.refunds));
+  console.log("return_amounts:", JSON.stringify(res.order?.return_amounts));
+  console.log("tenders:", JSON.stringify(res.order?.tenders));
+}
+
+function checkOriginalOrders() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  // m8rUTTi4のrefundのtender_id元の取引を確認
+  ["hMcBNY9h9EhSTCuzkmzUs3F01WLZY", "HHS8slbSiQF8r9OGgfzPIz8aI8cZY"].forEach(
+    (tenderId) => {
+      // Payments APIでtender_idから検索
+      const url = `https://connect.squareup.com/v2/payments/${tenderId}`;
+      try {
+        const res = JSON.parse(
+          UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
+        );
+        console.log(
+          JSON.stringify({
+            tender_id: tenderId,
+            source_type: res.payment?.source_type,
+            amount: res.payment?.amount_money?.amount,
+            card_brand: res.payment?.card_details?.card?.card_brand,
+            wallet_brand: res.payment?.wallet_details?.brand,
+          }),
+        );
+      } catch (e) {
+        console.log(`tender_id ${tenderId}: ${e.message}`);
+      }
+    },
+  );
+}
+
+function find1870() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Square売上データ");
+  const data = sheet.getDataRange().getValues();
+
+  data.slice(1).forEach((row) => {
+    if (row[SQ_COL.TYPE] === "PAYMENT" && Number(row[SQ_COL.AMOUNT]) === 1870) {
+      console.log(
+        JSON.stringify({
+          date: row[SQ_COL.DATE],
+          id: row[SQ_COL.ORDER_ID],
+          payType: row[SQ_COL.PAY_TYPE],
+          amount: row[SQ_COL.AMOUNT],
+        }),
+      );
+    }
+  });
+}
+
+function check1870Order() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/YZOSUmfQ6gnLx7joxmHCgIU6bg7YY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  res.order?.tenders?.forEach((t) => {
+    console.log(
+      JSON.stringify({
+        type: t.type,
+        payment_id: t.payment_id,
+        card_brand: t.card_details?.card_brand,
+        note: t.note,
+        amount: t.amount_money?.amount,
+      }),
+    );
+  });
+}
+
+function check1870Payment() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/payments/FIFftnSF5xrfR4m8qbC3XyoEy8JZY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  console.log(
+    JSON.stringify({
+      source_type: res.payment?.source_type,
+      card_brand: res.payment?.card_details?.card?.card_brand,
+      wallet_brand: res.payment?.wallet_details?.brand,
+      amount: res.payment?.amount_money?.amount,
+    }),
+  );
+}
+
+function findRefundSource() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  // Payments APIで返金済みの取引を探す
+  let cursor = null;
+  do {
+    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent("2026-02-01T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
+    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+
+    const res = JSON.parse(
+      UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
+    );
+
+    res.payments?.forEach((p) => {
+      if (p.refunded_money?.amount > 0) {
+        console.log(
+          JSON.stringify({
+            id: p.id,
+            source_type: p.source_type,
+            amount: p.amount_money?.amount,
+            refunded: p.refunded_money?.amount,
+            card_brand: p.card_details?.card?.card_brand,
+          }),
+        );
+      }
+    });
+
+    cursor = res.cursor ?? null;
+  } while (cursor);
+}
+
+function checkPartialRefund() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/payments/P59qEoffiMHqNDCx7AkDcLLNv1FZY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  console.log(
+    JSON.stringify({
+      order_id: res.payment?.order_id,
+      amount: res.payment?.amount_money?.amount,
+      refunded: res.payment?.refunded_money?.amount,
+    }),
+  );
+}
+
+function checkPartialRefundOrder() {
+  const sqHeaders = {
+    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const res = JSON.parse(
+    UrlFetchApp.fetch(
+      "https://connect.squareup.com/v2/orders/0zSpcCAQ2Wib7B7r3ZhJiSC1GsZZY",
+      {
+        headers: sqHeaders,
+      },
+    ).getContentText(),
+  );
+
+  console.log("return_amounts:", JSON.stringify(res.order?.return_amounts));
+  console.log("refunds:", JSON.stringify(res.order?.refunds));
+  console.log(
+    "tenders:",
+    JSON.stringify(
+      res.order?.tenders?.map((t) => ({
+        type: t.type,
+        payment_id: t.payment_id,
+        amount: t.amount_money?.amount,
+      })),
+    ),
+  );
 }
