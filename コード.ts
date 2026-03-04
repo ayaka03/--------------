@@ -1,7 +1,7 @@
 /**
  * インターラーケン売上レポート集計システム
  * SquareサマリーCSVの35項目に完全準拠
- * v2: 部分返金・FELICA・WALLET対応
+ * v3: 現金返品・カード返金・部分返金・FELICA・WALLET対応
  */
 
 const CONFIG = {
@@ -77,6 +77,10 @@ function runSquareUpdate() {
   finalizeUpdate();
 }
 
+// ============================================================
+// カラーミー関連
+// ============================================================
+
 function updateColormeSalesMaster(startDate) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = getOrCreateSheet(ss, "カラーミー売上データ");
@@ -136,6 +140,10 @@ function parseSaleDate(raw) {
   return raw.split(" ")[0];
 }
 
+// ============================================================
+// Square関連
+// ============================================================
+
 function updateSquareSalesMaster(startDate) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = getOrCreateSheet(ss, "Square売上データ");
@@ -172,7 +180,10 @@ function updateSquareSalesMaster(startDate) {
     "Content-Type": "application/json",
   };
 
-  const { brandMap, refundMap } = fetchPaymentsData(startDate, sqHeaders);
+  const { brandMap, refundMap, cardRefundPaymentIds } = fetchPaymentsData(
+    startDate,
+    sqHeaders,
+  );
 
   try {
     const locRes = JSON.parse(
@@ -209,6 +220,7 @@ function updateSquareSalesMaster(startDate) {
             existingKeys,
             brandMap,
             refundMap,
+            cardRefundPaymentIds,
           );
           if (newRows.length > 0) {
             sheet
@@ -225,10 +237,11 @@ function updateSquareSalesMaster(startDate) {
   }
 }
 
-// Payments APIからWALLETブランド・FELICA・部分返金を一括取得
+// Payments APIからWALLETブランド・FELICA・返金情報を一括取得
 function fetchPaymentsData(startDate, sqHeaders) {
   const brandMap = new Map();
   const refundMap = new Map();
+  const cardRefundPaymentIds = new Set(); // カード返金のpayment_id
   let cursor = null;
 
   do {
@@ -240,20 +253,24 @@ function fetchPaymentsData(startDate, sqHeaders) {
     );
 
     res.payments?.forEach((p) => {
+      // WALLETのブランド判別
       if (p.source_type === "WALLET" && p.wallet_details?.brand) {
         brandMap.set(p.id, p.wallet_details.brand);
       }
+      // FELICAの判別
       if (
         p.source_type === "CARD" &&
         p.card_details?.card?.card_brand === "FELICA"
       ) {
         brandMap.set(p.id, "FELICA");
       }
+      // 現金以外の返金を記録
       if (p.refunded_money?.amount > 0 && p.source_type !== "CASH") {
         refundMap.set(
           p.order_id,
           (refundMap.get(p.order_id) ?? 0) + p.refunded_money.amount,
         );
+        cardRefundPaymentIds.add(p.id); // payment_idを記録
       }
     });
 
@@ -262,10 +279,17 @@ function fetchPaymentsData(startDate, sqHeaders) {
 
   console.log(`ブランドマップ取得完了: ${brandMap.size}件`);
   console.log(`部分返金マップ取得完了: ${refundMap.size}件`);
-  return { brandMap, refundMap };
+  console.log(`カード返金ID取得完了: ${cardRefundPaymentIds.size}件`);
+  return { brandMap, refundMap, cardRefundPaymentIds };
 }
 
-function buildSquareRows(orders, existingKeys, brandMap, refundMap) {
+function buildSquareRows(
+  orders,
+  existingKeys,
+  brandMap,
+  refundMap,
+  cardRefundPaymentIds,
+) {
   const rows = [];
 
   for (const order of orders) {
@@ -276,6 +300,7 @@ function buildSquareRows(orders, existingKeys, brandMap, refundMap) {
     );
     const id = order.id;
 
+    // 1. 商品売上行 (SALE)
     if (order.line_items) {
       order.line_items.forEach((item, i) => {
         const key = `${id}_L_${i}`;
@@ -301,6 +326,7 @@ function buildSquareRows(orders, existingKeys, brandMap, refundMap) {
       });
     }
 
+    // 2. 注文サマリー行 (SUMMARY)
     const sumKey = `${id}_SUM`;
     if (!existingKeys.has(sumKey)) {
       let totalTax = order.total_tax_money?.amount ?? 0;
@@ -354,6 +380,41 @@ function buildSquareRows(orders, existingKeys, brandMap, refundMap) {
       ]);
     }
 
+    // 3. 現金返品のマイナス行（tenderがなく、カード返金でない場合）
+    if (
+      order.return_amounts &&
+      (!order.tenders || order.tenders.length === 0)
+    ) {
+      // refundsのtender_idがカード返金かどうか確認
+      const hasCardRefund =
+        order.refunds?.some((rf) => cardRefundPaymentIds?.has(rf.tender_id)) ??
+        false;
+
+      if (!hasCardRefund) {
+        const refundKey = `${id}_REFUND`;
+        if (!existingKeys.has(refundKey)) {
+          const total = order.return_amounts.total_money?.amount ?? 0;
+          rows.push([
+            dateStr,
+            id,
+            "返金",
+            "PAYMENT",
+            0,
+            0,
+            0,
+            0,
+            "現金",
+            0,
+            refundKey,
+            0,
+            0,
+            -total,
+          ]);
+        }
+      }
+    }
+
+    // 4. 支払い行 (PAYMENT)
     order.tenders?.forEach((tender, i) => {
       const key = `${id}_T_${i}`;
       if (!existingKeys.has(key)) {
@@ -378,6 +439,30 @@ function buildSquareRows(orders, existingKeys, brandMap, refundMap) {
         ]);
       }
     });
+
+    // 5. カード部分返金のマイナス行
+    const partialRefund = refundMap?.get(id) ?? 0;
+    if (partialRefund > 0 && order.tenders?.length > 0) {
+      const refundKey = `${id}_PREFUND`;
+      if (!existingKeys.has(refundKey)) {
+        rows.push([
+          dateStr,
+          id,
+          "部分返金",
+          "PAYMENT",
+          0,
+          0,
+          0,
+          0,
+          "カード",
+          0,
+          refundKey,
+          0,
+          0,
+          -partialRefund,
+        ]);
+      }
+    }
   }
 
   return rows;
@@ -447,6 +532,10 @@ function getPaymentType(tender, brandMap) {
       return "その他";
   }
 }
+
+// ============================================================
+// 再集計
+// ============================================================
 
 function recalculateAllSummaries() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -631,6 +720,10 @@ function buildSummaryRow(month, o) {
   ];
 }
 
+// ============================================================
+// ユーティリティ
+// ============================================================
+
 function finalizeUpdate() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   for (const name of ["Square売上データ", "カラーミー売上データ"]) {
@@ -685,6 +778,10 @@ function clearSquareData() {
   );
 }
 
+// ============================================================
+// テスト用：2月データ再取得
+// ============================================================
+
 function updateSquare2026Feb() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
@@ -720,7 +817,10 @@ function updateSquare2026Feb() {
     "Content-Type": "application/json",
   };
 
-  const { brandMap, refundMap } = fetchPaymentsData("2026-02-01", sqHeaders);
+  const { brandMap, refundMap, cardRefundPaymentIds } = fetchPaymentsData(
+    "2026-02-01",
+    sqHeaders,
+  );
 
   const locRes = JSON.parse(
     UrlFetchApp.fetch("https://connect.squareup.com/v2/locations", {
@@ -767,6 +867,7 @@ function updateSquare2026Feb() {
           new Set(),
           brandMap,
           refundMap,
+          cardRefundPaymentIds,
         );
         if (newRows.length > 0) {
           sheet
