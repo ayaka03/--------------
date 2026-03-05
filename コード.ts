@@ -1,8 +1,23 @@
 /**
  * インターラーケン売上レポート集計システム
  * SquareサマリーCSVの35項目に完全準拠
- * v3: 現金返品・カード返金・部分返金・FELICA・WALLET対応
+ * v5 FINAL: 全35項目完全一致版 🎉
+ *
+ * 実行環境: Google Apps Script (V8ランタイム)
+ *
+ * 対応済み項目:
+ * - WALLET支払い種別（au PAY / d払い / 楽天ペイ）
+ * - FELICA（電子マネー）
+ * - 現金返品のマイナス処理
+ * - カード部分返金のマイナス処理
+ * - 返金手数料の戻り処理
+ * - ゼロ円取引の取引履歴カウント
+ * - 全35項目の集計ロジック
  */
+
+// ============================================================
+// 定数
+// ============================================================
 
 const CONFIG = {
   SQUARE_ACCESS_TOKEN:
@@ -57,6 +72,10 @@ const ELECTRONIC_MONEY_BRANDS = new Set([
   "MANACA",
 ]);
 
+// ============================================================
+// メニュー
+// ============================================================
+
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("🚀インターラーケン操作")
@@ -78,7 +97,7 @@ function runSquareUpdate() {
 }
 
 // ============================================================
-// カラーミー関連
+// カラーミー
 // ============================================================
 
 function updateColormeSalesMaster(startDate) {
@@ -90,11 +109,14 @@ function updateColormeSalesMaster(startDate) {
   try {
     while (true) {
       const url = `https://api.shop-pro.jp/v1/sales.json?make_date_min=${startDate}&limit=100&offset=${offset}`;
-      const options = {
-        headers: { Authorization: `Bearer ${CONFIG.COLORME_ACCESS_TOKEN}` },
-      };
-      const res = JSON.parse(UrlFetchApp.fetch(url, options).getContentText());
+      const res = JSON.parse(
+        UrlFetchApp.fetch(url, {
+          headers: { Authorization: `Bearer ${CONFIG.COLORME_ACCESS_TOKEN}` },
+        }).getContentText(),
+      );
+
       if (!res.sales || res.sales.length === 0) break;
+
       const newRows = [];
       for (const sale of res.sales) {
         const saleDate = parseSaleDate(sale.make_date);
@@ -141,7 +163,7 @@ function parseSaleDate(raw) {
 }
 
 // ============================================================
-// Square関連
+// Square
 // ============================================================
 
 function updateSquareSalesMaster(startDate) {
@@ -180,10 +202,8 @@ function updateSquareSalesMaster(startDate) {
     "Content-Type": "application/json",
   };
 
-  const { brandMap, refundMap, cardRefundPaymentIds } = fetchPaymentsData(
-    startDate,
-    sqHeaders,
-  );
+  const { brandMap, refundMap, cardRefundPaymentIds, feeMap } =
+    fetchPaymentsData(startDate, sqHeaders);
 
   try {
     const locRes = JSON.parse(
@@ -229,7 +249,6 @@ function updateSquareSalesMaster(startDate) {
               .setValues(newRows);
           }
         }
-
         cursor = res.cursor ?? null;
       } while (cursor);
     }
@@ -238,17 +257,21 @@ function updateSquareSalesMaster(startDate) {
   }
 }
 
-// Payments APIからWALLETブランド・FELICA・返金情報を一括取得
+// Payments APIからブランド・返金・手数料情報を一括取得
 function fetchPaymentsData(startDate, sqHeaders) {
-  const brandMap = new Map();
-  const refundMap = new Map();
+  const brandMap = new Map(); // payment_id → ブランド名
+  const refundMap = new Map(); // order_id → 返金額
   const feeMap = new Map(); // order_id → 手数料合計
   const paymentOrderMap = new Map(); // payment_id → order_id
   const cardRefundPaymentIds = new Set(); // カード返金のpayment_id
   let cursor = null;
 
   do {
-    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
+    let url =
+      `https://connect.squareup.com/v2/payments` +
+      `?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}` +
+      `&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}` +
+      `&limit=200`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 
     const res = JSON.parse(
@@ -256,12 +279,14 @@ function fetchPaymentsData(startDate, sqHeaders) {
     );
 
     res.payments?.forEach((p) => {
-      paymentOrderMap.set(p.id, p.order_id); // ← 追加
-      // WALLETのブランド判別
+      // payment_id → order_id マップ
+      paymentOrderMap.set(p.id, p.order_id);
+
+      // WALLETブランド判別
       if (p.source_type === "WALLET" && p.wallet_details?.brand) {
         brandMap.set(p.id, p.wallet_details.brand);
       }
-      // FELICAの判別
+      // FELICA判別
       if (
         p.source_type === "CARD" &&
         p.card_details?.card?.card_brand === "FELICA"
@@ -274,9 +299,8 @@ function fetchPaymentsData(startDate, sqHeaders) {
           p.order_id,
           (refundMap.get(p.order_id) ?? 0) + p.refunded_money.amount,
         );
-        cardRefundPaymentIds.add(p.id); // payment_idを記録
+        cardRefundPaymentIds.add(p.id);
       }
-
       // 手数料を記録
       if (p.processing_fee) {
         const fee = p.processing_fee.reduce(
@@ -294,7 +318,9 @@ function fetchPaymentsData(startDate, sqHeaders) {
   // Refunds APIで手数料戻りを取得
   const refRes = JSON.parse(
     UrlFetchApp.fetch(
-      `https://connect.squareup.com/v2/refunds?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}`,
+      `https://connect.squareup.com/v2/refunds` +
+        `?begin_time=${encodeURIComponent(startDate + "T00:00:00+09:00")}` +
+        `&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}`,
       { headers: sqHeaders },
     ).getContentText(),
   );
@@ -315,6 +341,7 @@ function fetchPaymentsData(startDate, sqHeaders) {
   console.log(`ブランドマップ取得完了: ${brandMap.size}件`);
   console.log(`部分返金マップ取得完了: ${refundMap.size}件`);
   console.log(`カード返金ID取得完了: ${cardRefundPaymentIds.size}件`);
+  console.log(`手数料マップ取得完了: ${feeMap.size}件`);
   return { brandMap, refundMap, cardRefundPaymentIds, feeMap };
 }
 
@@ -393,12 +420,10 @@ function buildSquareRows(
       // Payments APIの部分返金を反映（商品返品がない場合のみ）
       if (retGross === 0 && retTax === 0 && manualRefund === 0) {
         const partialRefund = refundMap?.get(id) ?? 0;
-        if (partialRefund > 0) {
-          manualRefund = partialRefund;
-        }
+        if (partialRefund > 0) manualRefund = partialRefund;
       }
 
-      // カード返金注文かどうか確認（refundsのtender_idがcardRefundPaymentIdsにある）
+      // カード返金注文かどうか確認（受取合計額の取引履歴カウント用）
       const hasRefund =
         (refundMap?.get(id) ?? 0) > 0 ||
         order.refunds?.some((rf) => cardRefundPaymentIds?.has(rf.tender_id)) ===
@@ -422,12 +447,11 @@ function buildSquareRows(
       ]);
     }
 
-    // 3. 現金返品のマイナス行（tenderがなく、カード返金でない場合）
+    // 3. 現金返品のマイナス行（tenderなし・カード返金でない場合）
     if (
       order.return_amounts &&
       (!order.tenders || order.tenders.length === 0)
     ) {
-      // refundsのtender_idがカード返金かどうか確認
       const hasCardRefund =
         order.refunds?.some((rf) => cardRefundPaymentIds?.has(rf.tender_id)) ??
         false;
@@ -462,7 +486,7 @@ function buildSquareRows(
       if (!existingKeys.has(key)) {
         const payType = getPaymentType(tender, brandMap);
         const amt = tender.amount_money?.amount ?? 0;
-        const fee = feeMap?.get(id) ?? tender.processing_fee_money?.amount ?? 0; // ← ここだけ変更
+        const fee = feeMap?.get(id) ?? tender.processing_fee_money?.amount ?? 0;
         rows.push([
           dateStr,
           id,
@@ -536,12 +560,7 @@ function getPaymentType(tender, brandMap) {
     case "EXTERNAL": {
       const src = (tender.external_details?.source_name ?? "").toUpperCase();
       if (src.includes("AU PAY") || src.includes("AUPAY")) return "au PAY";
-      if (
-        src.includes("D払い") ||
-        src.includes("DBARAI") ||
-        src.includes("D-BARAI")
-      )
-        return "d払い";
+      if (src.includes("D払い") || src.includes("DBARAI")) return "d払い";
       if (src.includes("楽天") || src.includes("RAKUTEN")) return "楽天ペイ";
       return "その他";
     }
@@ -551,21 +570,14 @@ function getPaymentType(tender, brandMap) {
         return "その他";
       if (note.includes("代引")) return "その他";
       if (note.includes("pay pay") || note.includes("paypay")) return "その他";
-      if (
-        note.includes("売掛") ||
-        note.includes("掛け") ||
-        note.includes("aoi 売掛")
-      )
+      if (note.includes("売掛") || note.includes("掛け"))
         return "ハウスアカウント";
       if (note.includes("クレジット") || note.includes("credit"))
         return "カード";
       if (
-        note.includes("id") ||
-        note.includes("マナカ") ||
-        note.includes("manaca") ||
-        note.includes("イオン") ||
         note.includes("suica") ||
-        note.includes("pasmo")
+        note.includes("pasmo") ||
+        note.includes("id")
       )
         return "電子マネー";
       return "その他";
@@ -654,14 +666,13 @@ function aggregateMonthlyData(rows) {
         returns: 0,
         refund: 0,
         fees: 0,
-        items: 0,
         txAll: new Set(),
         txItems: new Set(),
+        txAllItems: new Set(),
         txReturns: new Set(),
         txDiscounts: new Set(),
         txTax: new Set(),
         txTenders: new Set(),
-        txAllItems: new Set(), // ← ここ！payの外
         pay: {
           "au PAY": 0,
           d払い: 0,
@@ -682,8 +693,7 @@ function aggregateMonthlyData(rows) {
     switch (type) {
       case "SALE":
         o.gross += Number(row[SQ_COL.GROSS]);
-        o.items += 1;
-        o.txAllItems.add(id); // ← 常に追加
+        o.txAllItems.add(id); // ゼロ円含む全取引
         if (Number(row[SQ_COL.GROSS]) > 0) {
           o.txItems.add(id);
           o.txAll.add(id);
@@ -717,7 +727,6 @@ function aggregateMonthlyData(rows) {
           o.pay["その他"] += amt;
         }
         o.fees += Number(row[SQ_COL.FEE]);
-        // 返金行もカウントに含める
         o.txTenders.add(id);
         break;
       }
@@ -832,7 +841,7 @@ function clearSquareData() {
 }
 
 // ============================================================
-// テスト用：2月データ再取得
+// テスト用：2026年2月データ取得
 // ============================================================
 
 function updateSquare2026Feb() {
@@ -905,14 +914,11 @@ function updateSquare2026Feb() {
       );
 
       if (res.orders) {
-        const febOrders = res.orders.filter((o) => {
-          const m = Utilities.formatDate(
-            new Date(o.closed_at),
-            "JST",
-            "yyyy-MM",
-          );
-          return m === "2026-02";
-        });
+        const febOrders = res.orders.filter(
+          (o) =>
+            Utilities.formatDate(new Date(o.closed_at), "JST", "yyyy-MM") ===
+            "2026-02",
+        );
         const newRows = buildSquareRows(
           febOrders,
           new Set(),
@@ -935,431 +941,4 @@ function updateSquare2026Feb() {
   SpreadsheetApp.getUi().alert(
     "取得完了！次は recalculateAllSummaries() を実行してください",
   );
-}
-
-function countPayments() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  let count = 0;
-  let cursor = null;
-
-  do {
-    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent("2026-02-01T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
-    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-
-    const res = JSON.parse(
-      UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
-    );
-
-    count += res.payments?.length ?? 0;
-    cursor = res.cursor ?? null;
-  } while (cursor);
-
-  console.log(`Payments API 2月件数: ${count}件`);
-}
-
-function comparePaymentsVsOrders() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  // Payments APIの全payment_idを収集
-  const paymentIds = new Set();
-  let cursor = null;
-
-  do {
-    let url = `https://connect.squareup.com/v2/payments?begin_time=${encodeURIComponent("2026-02-01T00:00:00+09:00")}&end_time=${encodeURIComponent("2026-03-01T00:00:00+09:00")}&limit=200`;
-    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-    const res = JSON.parse(
-      UrlFetchApp.fetch(url, { headers: sqHeaders }).getContentText(),
-    );
-    res.payments?.forEach((p) => paymentIds.add(p.order_id));
-    cursor = res.cursor ?? null;
-  } while (cursor);
-
-  // Squareシートのorder_idを収集
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-  const sheetOrderIds = new Set();
-  data.slice(1).forEach((row) => {
-    if (row[SQ_COL.TYPE] === "PAYMENT") {
-      sheetOrderIds.add(String(row[SQ_COL.ORDER_ID]));
-    }
-  });
-
-  console.log(`Payments APIのユニーク注文ID: ${paymentIds.size}件`);
-  console.log(`シートのユニーク注文ID: ${sheetOrderIds.size}件`);
-
-  // Payments APIにあってシートにないもの
-  let missing = 0;
-  paymentIds.forEach((id) => {
-    if (!sheetOrderIds.has(id)) {
-      console.log(`シートにない注文ID: ${id}`);
-      missing++;
-    }
-  });
-  console.log(`合計不足: ${missing}件`);
-}
-
-function checkMissingOrder() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/orders/C0lkuh7rJoSkQzQ0lCQbDCyRqcKZY",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  console.log(
-    JSON.stringify({
-      closed_at: res.order?.closed_at,
-      state: res.order?.state,
-      total: res.order?.total_money?.amount,
-    }),
-  );
-}
-
-function checkMissingOrderDetail() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/orders/C0lkuh7rJoSkQzQ0lCQbDCyRqcKZY",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  console.log(
-    JSON.stringify({
-      closed_at: res.order?.closed_at,
-      state: res.order?.state,
-      total: res.order?.total_money?.amount,
-      tenders: res.order?.tenders?.map((t) => ({
-        type: t.type,
-        amount: t.amount_money?.amount,
-      })),
-      line_items: res.order?.line_items?.map((i) => ({
-        name: i.name,
-        amount: i.gross_sales_money?.amount,
-      })),
-    }),
-  );
-}
-
-function countZeroSummary() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  let count = 0;
-  data.slice(1).forEach((row) => {
-    if (
-      row[SQ_COL.TYPE] === "SUMMARY" &&
-      Number(row[SQ_COL.TAX]) === 0 &&
-      Number(row[SQ_COL.DISC]) === 0 &&
-      Number(row[SQ_COL.RETURN_GROSS]) === 0 &&
-      Number(row[SQ_COL.AMOUNT]) === 0
-    ) {
-      count++;
-    }
-  });
-  console.log(`ゼロ円SUMMARY件数: ${count}件`);
-}
-
-function countHouseAccount() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  const ids = new Set();
-  data.slice(1).forEach((row) => {
-    if (
-      row[SQ_COL.TYPE] === "PAYMENT" &&
-      row[SQ_COL.PAY_TYPE] === "ハウスアカウント"
-    ) {
-      ids.add(String(row[SQ_COL.ORDER_ID]));
-    }
-  });
-  console.log(`ハウスアカウント注文数: ${ids.size}件`);
-}
-
-function findMissingTender() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  // PAYMENT行のIDのSet
-  const paymentIds = new Set();
-  // SUMMARY行のIDのSet
-  const summaryIds = new Set();
-
-  data.slice(1).forEach((row) => {
-    if (row[SQ_COL.TYPE] === "PAYMENT")
-      paymentIds.add(String(row[SQ_COL.ORDER_ID]));
-    if (row[SQ_COL.TYPE] === "SUMMARY")
-      summaryIds.add(String(row[SQ_COL.ORDER_ID]));
-  });
-
-  // SUMMARYはあるがPAYMENTがない注文
-  let count = 0;
-  summaryIds.forEach((id) => {
-    if (!paymentIds.has(id)) {
-      count++;
-      if (count <= 5) console.log(`PAYMENTなしSUMMARY: ${id}`);
-    }
-  });
-  console.log(`PAYMENTなしSUMMARY合計: ${count}件`);
-}
-
-function checkNoPaymentOrders() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const ids = [
-    "C0lkuh7rJoSkQzQ0lCQbDCyRqcKZY",
-    "InRmyhSK6Xs3inJqF9QhFM31tHbZY",
-    "6UZ7BhIFdESwakl3tltis0sxwOSZY",
-    "SOcHw3Boh9srsnTPekxJLLWPO2ZZY",
-    "QdaEf8pwo1NwQ8BVcp0wnE91FOJZY",
-  ];
-
-  ids.forEach((id) => {
-    const res = JSON.parse(
-      UrlFetchApp.fetch(`https://connect.squareup.com/v2/orders/${id}`, {
-        headers: sqHeaders,
-      }).getContentText(),
-    );
-    console.log(
-      JSON.stringify({
-        id,
-        total: res.order?.total_money?.amount,
-        tenders: res.order?.tenders?.length ?? 0,
-      }),
-    );
-  });
-}
-
-function checkAllNoPaymentOrders() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  const paymentIds = new Set();
-  const summaryIds = new Set();
-
-  data.slice(1).forEach((row) => {
-    if (row[SQ_COL.TYPE] === "PAYMENT")
-      paymentIds.add(String(row[SQ_COL.ORDER_ID]));
-    if (row[SQ_COL.TYPE] === "SUMMARY")
-      summaryIds.add(String(row[SQ_COL.ORDER_ID]));
-  });
-
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  let zeroCount = 0,
-    nonZeroCount = 0;
-  summaryIds.forEach((id) => {
-    if (!paymentIds.has(id)) {
-      const res = JSON.parse(
-        UrlFetchApp.fetch(`https://connect.squareup.com/v2/orders/${id}`, {
-          headers: sqHeaders,
-        }).getContentText(),
-      );
-      const total = res.order?.total_money?.amount ?? 0;
-      if (total === 0) {
-        zeroCount++;
-      } else {
-        nonZeroCount++;
-        console.log(`非ゼロ！id=${id}, total=${total}`);
-      }
-    }
-  });
-  console.log(`ゼロ円: ${zeroCount}件, 非ゼロ: ${nonZeroCount}件`);
-}
-
-function findOrphanSummary() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  const saleIds = new Set();
-  const summaryIds = new Set();
-  const paymentIds = new Set();
-
-  data.slice(1).forEach((row) => {
-    if (row[SQ_COL.TYPE] === "SALE") saleIds.add(String(row[SQ_COL.ORDER_ID]));
-    if (row[SQ_COL.TYPE] === "SUMMARY")
-      summaryIds.add(String(row[SQ_COL.ORDER_ID]));
-    if (row[SQ_COL.TYPE] === "PAYMENT")
-      paymentIds.add(String(row[SQ_COL.ORDER_ID]));
-  });
-
-  summaryIds.forEach((id) => {
-    if (!saleIds.has(id) && !paymentIds.has(id)) {
-      console.log(`SALE・PAYMENTなしSUMMARY: ${id}`);
-    }
-  });
-}
-
-function checkOrphanSummaryRow() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  data.slice(1).forEach((row) => {
-    if (String(row[SQ_COL.ORDER_ID]) === "qaO8EqV2A2lYrbk3BHCBokyIYtBZY") {
-      console.log(
-        JSON.stringify({
-          type: row[SQ_COL.TYPE],
-          tax: row[SQ_COL.TAX],
-          disc: row[SQ_COL.DISC],
-          returnGross: row[SQ_COL.RETURN_GROSS],
-          amount: row[SQ_COL.AMOUNT],
-        }),
-      );
-    }
-  });
-}
-
-function checkOrphanSummaryRow2() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Square売上データ");
-  const data = sheet.getDataRange().getValues();
-
-  data.slice(1).forEach((row) => {
-    if (String(row[SQ_COL.ORDER_ID]) === "qaO8EqV2A2lYrbk3BHCBokyIYtBZY") {
-      console.log(
-        JSON.stringify({
-          type: row[SQ_COL.TYPE],
-          payType: row[SQ_COL.PAY_TYPE],
-          amount: row[SQ_COL.AMOUNT],
-        }),
-      );
-    }
-  });
-}
-
-function checkFeeStructure() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/payments?begin_time=" +
-        encodeURIComponent("2026-02-01T00:00:00+09:00") +
-        "&end_time=" +
-        encodeURIComponent("2026-03-01T00:00:00+09:00") +
-        "&limit=5",
-      { headers: sqHeaders },
-    ).getContentText(),
-  );
-
-  res.payments?.forEach((p) => {
-    console.log(
-      JSON.stringify({
-        id: p.id,
-        amount: p.amount_money?.amount,
-        processing_fee: p.processing_fee,
-      }),
-    );
-  });
-}
-
-function checkRefundFee() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/payments/P59qEoffiMHqNDCx7AkDcLLNv1FZY",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  console.log(
-    JSON.stringify({
-      amount: res.payment?.amount_money?.amount,
-      refunded: res.payment?.refunded_money?.amount,
-      processing_fee: res.payment?.processing_fee,
-    }),
-  );
-}
-
-function checkRefundFeeDetail() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/refunds/d5dpHbyAHzORN6iSDsK4tbjwfLZRHJDX1UG8UuPVKJH",
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  console.log(
-    JSON.stringify({
-      amount: res.refund?.amount_money?.amount,
-      processing_fee: res.refund?.processing_fee,
-    }),
-  );
-}
-
-function checkRefunds() {
-  const sqHeaders = {
-    Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  const res = JSON.parse(
-    UrlFetchApp.fetch(
-      "https://connect.squareup.com/v2/refunds?begin_time=" +
-        encodeURIComponent("2026-02-01T00:00:00+09:00") +
-        "&end_time=" +
-        encodeURIComponent("2026-03-01T00:00:00+09:00"),
-      {
-        headers: sqHeaders,
-      },
-    ).getContentText(),
-  );
-
-  res.refunds?.forEach((r) => {
-    console.log(
-      JSON.stringify({
-        id: r.id,
-        amount: r.amount_money?.amount,
-        processing_fee: r.processing_fee,
-      }),
-    );
-  });
 }
