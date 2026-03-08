@@ -1,7 +1,7 @@
 /**
  * インターラーケン売上レポート集計システム
  * SquareサマリーCSVの35項目に完全準拠
- * v6 FINAL: 返金手数料・期間外返金対応版 🎉
+ * v6.1 FINAL: ヘッダー行修正・返金手数料・期間外返金対応版 🎉
  *
  * 実行環境: Google Apps Script (V8ランタイム)
  *
@@ -15,6 +15,7 @@
  * - CANCELEDの注文除外
  * - EXTERNAL返金のその他分類
  * - ゼロ円取引の取引履歴カウント
+ * - シート新規作成時のヘッダー行保護
  * - 全35項目の集計ロジック
  */
 
@@ -802,6 +803,30 @@ function updateSquareMonth(startDate, endDate, targetMonth) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = getOrCreateSheet(ss, "Square売上データ");
 
+  // ヘッダー行がない場合は追加（データが1行目に書き込まれるのを防ぐ）
+  if (sheet.getLastRow() === 0) {
+    sheet
+      .getRange(1, 1, 1, 14)
+      .setValues([
+        [
+          "日付",
+          "注文ID",
+          "商品名",
+          "種別",
+          "数量",
+          "売上",
+          "税金",
+          "割引",
+          "支払種別",
+          "手数料",
+          "キー",
+          "返品売上",
+          "返品税金",
+          "金額",
+        ],
+      ]);
+  }
+
   const sqHeaders = {
     Authorization: `Bearer ${CONFIG.SQUARE_ACCESS_TOKEN}`,
     "Content-Type": "application/json",
@@ -882,9 +907,7 @@ function updateSquareMonth(startDate, endDate, targetMonth) {
                 const detail = JSON.parse(
                   UrlFetchApp.fetch(
                     `https://connect.squareup.com/v2/orders/${o.id}`,
-                    {
-                      headers: sqHeaders,
-                    },
+                    { headers: sqHeaders },
                   ).getContentText(),
                 );
                 return detail.order ?? o;
