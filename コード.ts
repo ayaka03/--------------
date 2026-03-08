@@ -1,6 +1,22 @@
 /**
  * インターラーケン売上レポート集計システム
- **/
+ * SquareサマリーCSVの35項目に完全準拠
+ * v6 FINAL: 返金手数料・期間外返金対応版 🎉
+ *
+ * 実行環境: Google Apps Script (V8ランタイム)
+ *
+ * 対応済み項目:
+ * - WALLET支払い種別（au PAY / d払い / 楽天ペイ）
+ * - FELICA（電子マネー）
+ * - 現金返品のマイナス処理
+ * - カード部分返金のマイナス処理
+ * - 返金手数料の戻り処理（期間外の元支払いも個別API取得）
+ * - 期間外の元支払いのsource_type取得
+ * - CANCELEDの注文除外
+ * - EXTERNAL返金のその他分類
+ * - ゼロ円取引の取引履歴カウント
+ * - 全35項目の集計ロジック
+ */
 
 // ============================================================
 // 定数
@@ -218,9 +234,20 @@ function fetchPaymentsData(startDate, endDate, sqHeaders) {
   );
 
   refRes.refunds?.forEach((r) => {
+    // 返金手数料の処理（期間外の元支払いは個別APIで取得）
     if (r.processing_fee) {
-      const paymentId = r.id.split("_")[0];
-      const orderId = paymentOrderMap.get(paymentId);
+      let orderId = paymentOrderMap.get(r.payment_id);
+      if (!orderId) {
+        try {
+          const pRes = JSON.parse(
+            UrlFetchApp.fetch(
+              `https://connect.squareup.com/v2/payments/${r.payment_id}`,
+              { headers: sqHeaders, muteHttpExceptions: true },
+            ).getContentText(),
+          );
+          orderId = pRes.payment?.order_id;
+        } catch (e) {}
+      }
       if (orderId) {
         const fee = r.processing_fee.reduce(
           (sum, f) => sum + (f.amount_money?.amount ?? 0),
@@ -230,10 +257,10 @@ function fetchPaymentsData(startDate, endDate, sqHeaders) {
       }
     }
 
+    // 返金のsource_type取得（期間外の元支払いは個別APIで取得）
     if (r.amount_money?.amount > 0) {
       let sourceType = sourceTypeMap.get(r.payment_id);
       if (!sourceType) {
-        // 期間外の元支払いは個別APIで取得
         try {
           const pRes = JSON.parse(
             UrlFetchApp.fetch(
@@ -342,20 +369,13 @@ function buildSquareRows(
         }
       }
 
-      // refundsループを完全削除！
-
-      // refundsループを完全削除！
-      // if (retGross === 0 && retTax === 0) {
-      //   order.refunds?.forEach(...)
-      // }
-
       // Payments APIの部分返金を反映（商品返品がない場合のみ）
       if (retGross === 0 && retTax === 0 && manualRefund === 0) {
         const partialRefund = refundMap?.get(id) ?? 0;
         if (partialRefund > 0) manualRefund = partialRefund;
       }
 
-      // カード返金注文かどうか確認（受取合計額の取引履歴カウント用）
+      // 払い戻しフラグ（受取合計額の取引履歴カウント用）
       const hasRefund =
         (refundMap?.get(id) ?? 0) > 0 ||
         order.refunds?.some((rf) => cardRefundPaymentIds?.has(rf.tender_id)) ===
@@ -631,7 +651,7 @@ function aggregateMonthlyData(rows) {
     switch (type) {
       case "SALE":
         o.gross += Number(row[SQ_COL.GROSS]);
-        o.txAllItems.add(id); // ゼロ円含む全取引
+        o.txAllItems.add(id);
         if (Number(row[SQ_COL.GROSS]) > 0) {
           o.txItems.add(id);
           o.txAll.add(id);
@@ -646,7 +666,6 @@ function aggregateMonthlyData(rows) {
         if (Number(row[SQ_COL.TAX]) !== 0) o.txTax.add(id);
         if (Number(row[SQ_COL.DISC]) !== 0) o.txDiscounts.add(id);
         if (Number(row[SQ_COL.RETURN_GROSS]) !== 0) o.txReturns.add(id);
-        // 払い戻しフラグがある場合も受取合計額の取引履歴にカウント
         if (
           Number(row[SQ_COL.AMOUNT]) !== 0 ||
           row[SQ_COL.PAY_TYPE] === "払い戻し"
@@ -655,7 +674,6 @@ function aggregateMonthlyData(rows) {
         }
         break;
 
-      // PAYMENTのcase内
       case "PAYMENT": {
         const pt = row[SQ_COL.PAY_TYPE];
         const amt = Number(row[SQ_COL.AMOUNT]);
@@ -777,7 +795,7 @@ function clearSquareData() {
 }
 
 // ============================================================
-// 1月・2月データ取得
+// 月次データ取得
 // ============================================================
 
 function updateSquareMonth(startDate, endDate, targetMonth) {
