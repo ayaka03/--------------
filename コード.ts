@@ -1,11 +1,15 @@
 /**
  * インターラーケン売上レポート集計システム
- * SquareサマリーCSVの35項目に完全準拠
- * v6.1 FINAL: ヘッダー行修正・返金手数料・期間外返金対応版 🎉
+ * SquareサマリーCSVの38項目に完全準拠
+ * v7.5: 年月列テキスト固定版 🔥
  *
  * 実行環境: Google Apps Script (V8ランタイム)
  *
- * 対応済み項目:
+ * 使い方:
+ *   「Square設定」シートのA2（開始日）・B2（終了日）に期間を入力して
+ *   メニュー「Square売上を更新」を押すだけ！
+ *
+ * 対応済み項目（38項目）:
  * - WALLET支払い種別（au PAY / d払い / 楽天ペイ）
  * - FELICA（電子マネー）
  * - 現金返品のマイナス処理
@@ -16,7 +20,7 @@
  * - EXTERNAL返金のその他分類
  * - ゼロ円取引の取引履歴カウント
  * - シート新規作成時のヘッダー行保護
- * - 全35項目の集計ロジック
+ * - 一部支払い / 払い戻された一部入金 / 払い戻された一部入金の取引（NEW）
  */
 
 // ============================================================
@@ -34,7 +38,6 @@ const CONFIG = {
       "COLORME_ACCESS_TOKEN",
     );
   },
-  START_DATE: "2026-02-01",
 };
 
 const CM_COL = {
@@ -68,6 +71,23 @@ const SQ_COL = {
   AMOUNT: 13,
 };
 
+const SQ_HEADERS_KEY = [
+  "日付",
+  "注文ID",
+  "商品名",
+  "種別",
+  "数量",
+  "売上",
+  "税金",
+  "割引",
+  "支払種別",
+  "手数料",
+  "キー",
+  "返品売上",
+  "返品税金",
+  "金額",
+];
+
 const ELECTRONIC_MONEY_BRANDS = new Set([
   "ID",
   "QUICPAY",
@@ -93,16 +113,82 @@ function onOpen() {
     .addItem("2. Square売上を更新", "runSquareUpdate")
     .addSeparator()
     .addItem("3. レポートを再集計", "recalculateAllSummaries")
+    .addSeparator()
+    .addItem("⚠️ Squareデータをクリア", "clearSquareData")
     .addToUi();
 }
 
+// ============================================================
+// 設定シート
+// ============================================================
+
+/**
+ * 「Square設定」シートからstart/endDateを取得
+ * シートがなければ自動作成してサンプルを入力する
+ */
+function getSettingsRange() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("Square設定");
+
+  if (!sheet) {
+    sheet = ss.insertSheet("Square設定");
+    sheet
+      .getRange("A1:C1")
+      .setValues([["開始日", "終了日", "取得済み月"]])
+      .setFontWeight("bold")
+      .setBackground("#f3f3f3");
+    // デフォルト: 今月1日〜今日
+    const now = new Date();
+    const firstDay = Utilities.formatDate(
+      new Date(now.getFullYear(), now.getMonth(), 1),
+      "JST",
+      "yyyy-MM-dd",
+    );
+    const today = Utilities.formatDate(now, "JST", "yyyy-MM-dd");
+    sheet.getRange("A2:B2").setValues([[firstDay, today]]);
+    sheet.setColumnWidth(1, 130);
+    sheet.setColumnWidth(2, 130);
+    SpreadsheetApp.getUi().alert(
+      "「Square設定」シートを作成しました。\nA2に開始日、B2に終了日を入力してから再実行してください。",
+    );
+    return null;
+  }
+
+  const vals = sheet.getRange("A2:B2").getValues()[0];
+  const startDate =
+    vals[0] instanceof Date
+      ? Utilities.formatDate(vals[0], "JST", "yyyy-MM-dd")
+      : String(vals[0]).trim();
+  const endDate =
+    vals[1] instanceof Date
+      ? Utilities.formatDate(vals[1], "JST", "yyyy-MM-dd")
+      : String(vals[1]).trim();
+
+  if (!startDate || !endDate || startDate.length < 10 || endDate.length < 10) {
+    SpreadsheetApp.getUi().alert(
+      "「Square設定」シートのA2に開始日、B2に終了日を\nyyyy-MM-dd形式で入力してください。",
+    );
+    return null;
+  }
+
+  return { startDate, endDate };
+}
+
+// ============================================================
+// エントリーポイント
+// ============================================================
+
 function runColormeUpdate() {
-  updateColormeSalesMaster(CONFIG.START_DATE);
+  const settings = getSettingsRange();
+  if (!settings) return;
+  updateColormeSalesMaster(settings.startDate);
   finalizeUpdate();
 }
 
 function runSquareUpdate() {
-  updateSquareSalesMaster(CONFIG.START_DATE);
+  const settings = getSettingsRange();
+  if (!settings) return;
+  updateSquareRange(settings.startDate, settings.endDate);
   finalizeUpdate();
 }
 
@@ -173,13 +259,89 @@ function parseSaleDate(raw) {
 }
 
 // ============================================================
-// Square
+// Square: 期間指定取得
+// ============================================================
+
+/**
+ * 指定期間を月ごとに分割してSquareデータを取得する
+ * 例: startDate="2025-03-01", endDate="2026-02-28"
+ *     → 2025-03, 2025-04, ... 2026-02 の12ヶ月を順番に取得
+ */
+function updateSquareRange(startDate, endDate) {
+  const months = getMonthsInRange(startDate, endDate);
+  console.log(
+    `取得対象: ${months.length}ヶ月 (${months[0]} 〜 ${months[months.length - 1]})`,
+  );
+
+  // 設定シートから再開位置を取得（タイムアウト時の続きから再開）
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const settingSheet = ss.getSheetByName("Square設定");
+  const lastDone = settingSheet
+    ? String(settingSheet.getRange("C2").getValue()).trim()
+    : "";
+  let resume = !lastDone || lastDone === "完了";
+
+  for (const month of months) {
+    if (!resume) {
+      if (month === lastDone) resume = true;
+      continue;
+    }
+    const monthStart = month + "-01";
+    const nextMonth = getNextMonthStart(month);
+    const monthEnd = nextMonth > endDate + "X" ? addOneDay(endDate) : nextMonth;
+    console.log(`=== ${month} 取得開始 ===`);
+    updateSquareMonth(monthStart, monthEnd, month);
+
+    // 完了した月を記録（途中でタイムアウトしても次回ここから再開）
+    if (settingSheet) {
+      settingSheet.getRange("C2").setValue(month);
+      SpreadsheetApp.flush();
+    }
+  }
+
+  // 全月完了したらリセット
+  if (settingSheet) {
+    settingSheet.getRange("C2").setValue("完了");
+    SpreadsheetApp.getUi().alert("✅ Square売上データの取得が完了しました！");
+  }
+}
+
+/** "yyyy-MM" の配列を返す */
+function getMonthsInRange(startDate, endDate) {
+  const months = [];
+  const start = new Date(startDate + "T00:00:00+09:00");
+  const end = new Date(endDate + "T00:00:00+09:00");
+  let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cur <= end) {
+    months.push(Utilities.formatDate(cur, "JST", "yyyy-MM"));
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return months;
+}
+
+/** "yyyy-MM" → 翌月の "yyyy-MM-dd" */
+function getNextMonthStart(month) {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(y, m, 1); // JavaScriptのDateは0始まり月なので m=次月
+  return Utilities.formatDate(d, "JST", "yyyy-MM-dd");
+}
+
+/** "yyyy-MM-dd" の翌日を返す */
+function addOneDay(dateStr) {
+  const d = new Date(dateStr + "T00:00:00+09:00");
+  d.setDate(d.getDate() + 1);
+  return Utilities.formatDate(d, "JST", "yyyy-MM-dd");
+}
+
+// ============================================================
+// Square: 支払いデータ取得
 // ============================================================
 
 function fetchPaymentsData(startDate, endDate, sqHeaders) {
   const brandMap = new Map();
   const refundMap = new Map();
   const feeMap = new Map();
+  const partialMap = new Map(); // NEW: order_id → 一部支払い合計
   const paymentOrderMap = new Map();
   const sourceTypeMap = new Map();
   const cardRefundPaymentIds = new Set();
@@ -211,7 +373,6 @@ function fetchPaymentsData(startDate, endDate, sqHeaders) {
       ) {
         brandMap.set(p.id, "FELICA");
       }
-
       if (p.processing_fee) {
         const fee = p.processing_fee.reduce(
           (sum, f) => sum + (f.amount_money?.amount ?? 0),
@@ -219,6 +380,16 @@ function fetchPaymentsData(startDate, endDate, sqHeaders) {
         );
         if (fee > 0)
           feeMap.set(p.order_id, (feeMap.get(p.order_id) ?? 0) + fee);
+      }
+
+      // 一部支払い: approved_money < total_money のとき差額が「一部支払い」
+      // Square仕様: total_money = 実際の注文合計, approved_money = 実際に受け取った金額
+      if (p.approved_money && p.total_money) {
+        const diff =
+          (p.total_money.amount ?? 0) - (p.approved_money.amount ?? 0);
+        if (diff > 0 && p.order_id) {
+          partialMap.set(p.order_id, (partialMap.get(p.order_id) ?? 0) + diff);
+        }
       }
     });
 
@@ -235,7 +406,7 @@ function fetchPaymentsData(startDate, endDate, sqHeaders) {
   );
 
   refRes.refunds?.forEach((r) => {
-    // 返金手数料の処理（期間外の元支払いは個別APIで取得）
+    // 返金手数料（期間外の元支払いは個別APIで取得）
     if (r.processing_fee) {
       let orderId = paymentOrderMap.get(r.payment_id);
       if (!orderId) {
@@ -284,18 +455,22 @@ function fetchPaymentsData(startDate, endDate, sqHeaders) {
     }
   });
 
-  console.log(`ブランドマップ取得完了: ${brandMap.size}件`);
-  console.log(`部分返金マップ取得完了: ${refundMap.size}件`);
-  console.log(`カード返金ID取得完了: ${cardRefundPaymentIds.size}件`);
-  console.log(`手数料マップ取得完了: ${feeMap.size}件`);
+  console.log(
+    `ブランドマップ: ${brandMap.size}件 / 部分返金: ${refundMap.size}件 / 手数料: ${feeMap.size}件 / 一部支払い: ${partialMap.size}件`,
+  );
   return {
     brandMap,
     refundMap,
     cardRefundPaymentIds,
     externalRefundPaymentIds,
     feeMap,
+    partialMap,
   };
 }
+
+// ============================================================
+// Square: 行データ生成
+// ============================================================
 
 function buildSquareRows(
   orders,
@@ -305,6 +480,7 @@ function buildSquareRows(
   cardRefundPaymentIds,
   externalRefundPaymentIds,
   feeMap,
+  partialMap,
 ) {
   const rows = [];
 
@@ -362,11 +538,8 @@ function buildSquareRows(
           const hasCatalogItem = order.returns?.some((r) =>
             r.return_line_items?.some((i) => i.catalog_object_id),
           );
-          if (hasCatalogItem) {
-            retGross = total;
-          } else {
-            manualRefund = total;
-          }
+          retGross = hasCatalogItem ? total : 0;
+          manualRefund = hasCatalogItem ? 0 : total;
         }
       }
 
@@ -489,6 +662,30 @@ function buildSquareRows(
         ]);
       }
     }
+
+    // 6. 一部支払い行 (PARTIAL) ← NEW
+    const partial = partialMap?.get(id) ?? 0;
+    if (partial > 0) {
+      const partialKey = `${id}_PARTIAL`;
+      if (!existingKeys.has(partialKey)) {
+        rows.push([
+          dateStr,
+          id,
+          "一部支払い",
+          "PARTIAL",
+          0,
+          0,
+          0,
+          0,
+          "",
+          0,
+          partialKey,
+          0,
+          0,
+          partial,
+        ]);
+      }
+    }
   }
 
   return rows;
@@ -497,16 +694,17 @@ function buildSquareRows(
 function getPaymentType(tender, brandMap) {
   switch (tender.type) {
     case "CARD": {
-      const mappedBrand = (
-        brandMap?.get(tender.payment_id) ?? ""
-      ).toUpperCase();
+      // brandMapのキーはPayments APIのpayment_id = tender.payment_id または tender.id
+      const tenderId = tender.payment_id ?? tender.id;
+      const mappedBrand = (brandMap?.get(tenderId) ?? "").toUpperCase();
       if (mappedBrand === "FELICA") return "電子マネー";
       const brand = (tender.card_details?.card_brand ?? "").toUpperCase();
       if (brand === "FELICA") return "電子マネー";
       return ELECTRONIC_MONEY_BRANDS.has(brand) ? "電子マネー" : "カード";
     }
     case "WALLET": {
-      const brand = (brandMap?.get(tender.payment_id) ?? "").toUpperCase();
+      const tenderId = tender.payment_id ?? tender.id;
+      const brand = (brandMap?.get(tenderId) ?? "").toUpperCase();
       if (brand === "RAKUTEN_PAY") return "楽天ペイ";
       if (brand === "AU_PAY") return "au PAY";
       if (brand === "D_BARAI") return "d払い";
@@ -569,6 +767,8 @@ function recalculateAllSummaries() {
     "純売上高",
     "繰延売上",
     "ギフトカード売上",
+    "一部支払い",
+    "払い戻された一部入金", // NEW (38項目)
     "税金",
     "金額を指定した払い戻し",
     "売上合計",
@@ -593,6 +793,7 @@ function recalculateAllSummaries() {
     "ディスカウント取引履歴",
     "無料提供取引履歴",
     "ギフトカード売上取引履歴",
+    "払い戻された一部入金の取引", // NEW (38項目)
     "税金取引履歴",
     "総売上取引履歴",
     "受取合計額の取引履歴",
@@ -602,7 +803,24 @@ function recalculateAllSummaries() {
     .sort()
     .reverse()
     .map((m) => buildSummaryRow(m, monthly[m]));
-  writeToSheet(getOrCreateSheet(ss, "Square月次売上"), headers, rows);
+  const targetSheet = getOrCreateSheet(ss, "Square月次売上");
+  writeToSheet(targetSheet, headers, rows);
+
+  // 年月列をテキスト形式で上書き（スプレッドシートが日付型に変換するのを防ぐ）
+  const lastRow = targetSheet.getLastRow();
+  if (lastRow >= 2) {
+    const monthValues = rows.map((r) => {
+      const raw = String(r[0]);
+      const parts = raw.split("-");
+      return [
+        parts.length >= 2 ? parts[0] + "-" + parts[1].padStart(2, "0") : raw,
+      ];
+    });
+    targetSheet
+      .getRange(2, 1, monthValues.length, 1)
+      .setNumberFormat("@")
+      .setValues(monthValues);
+  }
 }
 
 function aggregateMonthlyData(rows) {
@@ -610,10 +828,18 @@ function aggregateMonthlyData(rows) {
 
   for (const row of rows) {
     const dateVal = row[SQ_COL.DATE];
-    const m =
-      dateVal instanceof Date
-        ? Utilities.formatDate(dateVal, "JST", "yyyy-MM")
-        : String(dateVal).substring(0, 7);
+    let m;
+    if (dateVal instanceof Date) {
+      m = Utilities.formatDate(dateVal, "JST", "yyyy-MM");
+    } else {
+      // 文字列「yyyy-MM-dd」または「yyyy-M-dd」を正規化して「yyyy-MM」に統一
+      const parts = String(dateVal).split("-");
+      if (parts.length >= 2) {
+        m = parts[0] + "-" + parts[1].padStart(2, "0");
+      } else {
+        m = String(dateVal).substring(0, 7);
+      }
+    }
 
     if (!m || m.length < 7) continue;
 
@@ -625,6 +851,7 @@ function aggregateMonthlyData(rows) {
         returns: 0,
         refund: 0,
         fees: 0,
+        partial: 0,
         txAll: new Set(),
         txItems: new Set(),
         txAllItems: new Set(),
@@ -632,6 +859,7 @@ function aggregateMonthlyData(rows) {
         txDiscounts: new Set(),
         txTax: new Set(),
         txTenders: new Set(),
+        txPartial: new Set(),
         pay: {
           "au PAY": 0,
           d払い: 0,
@@ -679,15 +907,16 @@ function aggregateMonthlyData(rows) {
         const pt = row[SQ_COL.PAY_TYPE];
         const amt = Number(row[SQ_COL.AMOUNT]);
         if (pt === "オンライン") break;
-        if (pt in o.pay) {
-          o.pay[pt] += amt;
-        } else {
-          o.pay["その他"] += amt;
-        }
+        o.pay[pt in o.pay ? pt : "その他"] += amt;
         o.fees += Number(row[SQ_COL.FEE]);
         o.txTenders.add(id);
         break;
       }
+
+      case "PARTIAL": // NEW: 一部支払い
+        o.partial += Number(row[SQ_COL.AMOUNT]);
+        o.txPartial.add(id);
+        break;
     }
   }
 
@@ -710,6 +939,8 @@ function buildSummaryRow(month, o) {
     netSales,
     0,
     0,
+    o.partial,
+    -o.partial, // 一部支払い / 払い戻された一部入金
     o.tax,
     o.refund,
     totalSales,
@@ -734,6 +965,7 @@ function buildSummaryRow(month, o) {
     o.txDiscounts.size,
     0,
     0,
+    o.txPartial.size, // 払い戻された一部入金の取引
     o.txTax.size,
     o.txItems.size,
     o.txTenders.size,
@@ -790,13 +1022,20 @@ function writeToSheet(sheet, headers, rows) {
 }
 
 function clearSquareData() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.alert(
+    "確認",
+    "Square売上データをすべて削除します。よろしいですか？",
+    ui.ButtonSet.YES_NO,
+  );
+  if (res !== ui.Button.YES) return;
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const existing = ss.getSheetByName("Square売上データ");
   if (existing) ss.deleteSheet(existing);
 }
 
 // ============================================================
-// 月次データ取得
+// Square: 月単位取得（内部関数）
 // ============================================================
 
 function updateSquareMonth(startDate, endDate, targetMonth) {
@@ -805,26 +1044,7 @@ function updateSquareMonth(startDate, endDate, targetMonth) {
 
   // ヘッダー行がない場合は追加（データが1行目に書き込まれるのを防ぐ）
   if (sheet.getLastRow() === 0) {
-    sheet
-      .getRange(1, 1, 1, 14)
-      .setValues([
-        [
-          "日付",
-          "注文ID",
-          "商品名",
-          "種別",
-          "数量",
-          "売上",
-          "税金",
-          "割引",
-          "支払種別",
-          "手数料",
-          "キー",
-          "返品売上",
-          "返品税金",
-          "金額",
-        ],
-      ]);
+    sheet.getRange(1, 1, 1, SQ_HEADERS_KEY.length).setValues([SQ_HEADERS_KEY]);
   }
 
   const sqHeaders = {
@@ -838,6 +1058,7 @@ function updateSquareMonth(startDate, endDate, targetMonth) {
     cardRefundPaymentIds,
     externalRefundPaymentIds,
     feeMap,
+    partialMap,
   } = fetchPaymentsData(startDate, endDate, sqHeaders);
 
   // Refunds APIから返品注文IDを収集
@@ -922,6 +1143,7 @@ function updateSquareMonth(startDate, endDate, targetMonth) {
           cardRefundPaymentIds,
           externalRefundPaymentIds,
           feeMap,
+          partialMap,
         );
         if (newRows.length > 0) {
           sheet
@@ -981,20 +1203,12 @@ function updateSquareMonth(startDate, endDate, targetMonth) {
       cardRefundPaymentIds,
       externalRefundPaymentIds,
       feeMap,
+      partialMap,
     );
     if (missingRows.length > 0) {
       sheet
         .getRange(sheet.getLastRow() + 1, 1, missingRows.length, 14)
         .setValues(missingRows);
-      missingRows.forEach((row) => existingKeys.add(String(row[SQ_COL.KEY])));
     }
   }
-}
-
-function updateSquare2026Jan() {
-  updateSquareMonth("2026-01-01", "2026-02-01", "2026-01");
-}
-
-function updateSquare2026Feb() {
-  updateSquareMonth("2026-02-01", "2026-03-01", "2026-02");
 }
