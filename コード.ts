@@ -1,7 +1,7 @@
 /**
  * インターラーケン売上レポート集計システム
  * SquareサマリーCSVの38項目に完全準拠
- * v7.5: 年月列テキスト固定版 🔥
+ * v7.7: card_details.card.card_brand修正版 🔥
  *
  * 実行環境: Google Apps Script (V8ランタイム)
  *
@@ -694,11 +694,10 @@ function buildSquareRows(
 function getPaymentType(tender, brandMap) {
   switch (tender.type) {
     case "CARD": {
-      // brandMapのキーはPayments APIのpayment_id = tender.payment_id または tender.id
       const tenderId = tender.payment_id ?? tender.id;
       const mappedBrand = (brandMap?.get(tenderId) ?? "").toUpperCase();
       if (mappedBrand === "FELICA") return "電子マネー";
-      const brand = (tender.card_details?.card_brand ?? "").toUpperCase();
+      const brand = (tender.card_details?.card?.card_brand ?? "").toUpperCase();
       if (brand === "FELICA") return "電子マネー";
       return ELECTRONIC_MONEY_BRANDS.has(brand) ? "電子マネー" : "カード";
     }
